@@ -9,6 +9,7 @@
 import {
   buildRenderFrame,
   KeyframeEvaluator,
+  framesToSeconds,
   type TextLayerData,
   type ShapeLayerData,
   type LineLayerData,
@@ -22,8 +23,11 @@ import {
   type CrossTransition,
   type Transition,
   type CrossTransitionRef,
+  type EditableTrack,
+  type FrameRate,
   EvaluatorManager,
 } from "@tooscut/render-engine";
+
 import type {
   EditorClip,
   VideoClip,
@@ -33,20 +37,20 @@ import type {
   LineClip,
   ProjectSettings,
 } from "../state/video-editor-store";
-import type { EditableTrack } from "@tooscut/render-engine";
 
-export interface LayerBuilderInput {
+interface LayerBuilderInput {
   clips: EditorClip[];
   tracks: EditableTrack[];
   crossTransitions: CrossTransitionRef[];
   settings: ProjectSettings;
+  /** Current timeline position in frames (project frame rate) */
   timelineTime: number;
   evaluatorManager: EvaluatorManager;
   /** If true, ignore muted track filtering (for export) */
   includeMutedTracks?: boolean;
 }
 
-export interface LayerBuilderOutput {
+interface LayerBuilderOutput {
   frame: RenderFrame;
   visibleMediaClips: (VideoClip | ImageClip)[];
   visibleTextClips: TextClip[];
@@ -136,6 +140,17 @@ function computeCrossTransition(
   return undefined;
 }
 
+function getCachedKeyframeEvaluator(
+  clip: Pick<TimelineClip, "keyframes" | "id">,
+  evaluatorManager: EvaluatorManager,
+): KeyframeEvaluator | null {
+  if (!clip.keyframes?.tracks?.length) {
+    return null;
+  }
+
+  return evaluatorManager.getEvaluator(clip as TimelineClip);
+}
+
 /**
  * Build render frame and layers for a given timeline time.
  * Shared between preview-panel (live playback) and export (frame rendering).
@@ -188,7 +203,8 @@ export function buildLayersForTime(input: LayerBuilderInput): LayerBuilderOutput
   const shapeLayers: ShapeLayerData[] = [];
   const visibleLineClips: LineClip[] = [];
   const lineLayers: LineLayerData[] = [];
-  // Map clipId → textureId for clips in cross transitions (need per-clip textures)
+  const visibleMediaAssetCounts = new Map<string, number>();
+  // Map clipId → textureId for clips that need per-clip textures
   const crossTransitionTextureMap = new Map<string, string>();
 
   for (let i = 0; i < clips.length; i++) {
@@ -207,22 +223,23 @@ export function buildLayersForTime(input: LayerBuilderInput): LayerBuilderOutput
 
     // For cross transition clips that are not normally visible, check if
     // the cross transition is actually active at this time
-    if (!normallyVisible && hasCrossTransition) {
-      const ct = computeCrossTransition(c.id, clips, crossTransitions, timelineTime);
-      if (!ct) continue;
-    }
+    const activeCrossTransition = hasCrossTransition
+      ? computeCrossTransition(c.id, clips, crossTransitions, timelineTime)
+      : undefined;
+    if (!normallyVisible && hasCrossTransition && !activeCrossTransition) continue;
 
     // Skip clips on muted tracks
     if (mutedTrackIds !== null && mutedTrackIds.has(c.trackId)) continue;
 
-    const activeCrossTransition = hasCrossTransition
-      ? computeCrossTransition(c.id, clips, crossTransitions, timelineTime)
-      : undefined;
-
     const type = c.type;
     if (type === "video" || type === "image") {
-      const mc = c as VideoClip | ImageClip;
+      const mc = c;
       visibleMediaClips.push(mc);
+      const sourceAssetId = mc.assetId;
+      visibleMediaAssetCounts.set(
+        sourceAssetId,
+        (visibleMediaAssetCounts.get(sourceAssetId) ?? 0) + 1,
+      );
       // When a clip is in a cross transition, use its clip ID as texture key
       // so that two clips from the same asset get separate textures.
       const textureId = activeCrossTransition ? mc.id : mc.assetId;
@@ -233,6 +250,7 @@ export function buildLayersForTime(input: LayerBuilderInput): LayerBuilderOutput
         id: mc.id,
         assetId: textureId,
         trackId: mc.trackId,
+        // Everything in frames — frame builder is unit-agnostic, just needs consistency
         startTime: mc.startTime,
         duration: mc.duration,
         inPoint: mc.inPoint,
@@ -242,9 +260,10 @@ export function buildLayersForTime(input: LayerBuilderInput): LayerBuilderOutput
         transitionIn: computeTransitionIn(mc, timelineTime),
         transitionOut: computeTransitionOut(mc, timelineTime),
         crossTransition: activeCrossTransition,
+        colorGrading: mc.colorGrading,
       });
     } else if (type === "text") {
-      const tc = c as TextClip;
+      const tc = c;
       visibleTextClips.push(tc);
       textLayers.push({
         id: tc.id,
@@ -257,23 +276,24 @@ export function buildLayersForTime(input: LayerBuilderInput): LayerBuilderOutput
         transition_out: computeTransitionOut(tc, timelineTime),
       });
     } else if (type === "shape") {
-      const sc = c as ShapeClip;
+      const sc = c;
       visibleShapeClips.push(sc);
 
       let box = sc.shapeBox;
       let style = sc.shapeStyle;
       let opacity = sc.effects?.opacity ?? 1;
 
-      if (sc.keyframes?.tracks?.length) {
-        const localTime = timelineTime - sc.startTime;
-        const evaluator = new KeyframeEvaluator(sc.keyframes);
-        const ex = evaluator.evaluate("x", localTime);
-        const ey = evaluator.evaluate("y", localTime);
-        const ew = evaluator.evaluate("width", localTime);
-        const eh = evaluator.evaluate("height", localTime);
-        const cr = evaluator.evaluate("cornerRadius", localTime);
-        const sw = evaluator.evaluate("strokeWidth", localTime);
-        const op = evaluator.evaluate("opacity", localTime);
+      const evaluator = getCachedKeyframeEvaluator(sc, evaluatorManager);
+      if (evaluator) {
+        // Keyframes are stored in frames — use frame-based local time
+        const localTimeFrames = timelineTime - sc.startTime;
+        const ex = evaluator.evaluate("x", localTimeFrames);
+        const ey = evaluator.evaluate("y", localTimeFrames);
+        const ew = evaluator.evaluate("width", localTimeFrames);
+        const eh = evaluator.evaluate("height", localTimeFrames);
+        const cr = evaluator.evaluate("cornerRadius", localTimeFrames);
+        const sw = evaluator.evaluate("strokeWidth", localTimeFrames);
+        const op = evaluator.evaluate("opacity", localTimeFrames);
 
         if (!Number.isNaN(ex) || !Number.isNaN(ey) || !Number.isNaN(ew) || !Number.isNaN(eh)) {
           box = {
@@ -306,22 +326,23 @@ export function buildLayersForTime(input: LayerBuilderInput): LayerBuilderOutput
         transition_out: computeTransitionOut(sc, timelineTime),
       });
     } else if (type === "line") {
-      const lc = c as LineClip;
+      const lc = c;
       visibleLineClips.push(lc);
 
       let box: LineBox = lc.lineBox;
       let style: LineStyle = lc.lineStyle;
       let opacity = lc.effects?.opacity ?? 1;
 
-      if (lc.keyframes?.tracks?.length) {
-        const localTime = timelineTime - lc.startTime;
-        const evaluator = new KeyframeEvaluator(lc.keyframes);
-        const x1 = evaluator.evaluate("x1", localTime);
-        const y1 = evaluator.evaluate("y1", localTime);
-        const x2 = evaluator.evaluate("x2", localTime);
-        const y2 = evaluator.evaluate("y2", localTime);
-        const sw = evaluator.evaluate("strokeWidth", localTime);
-        const op = evaluator.evaluate("opacity", localTime);
+      const evaluator = getCachedKeyframeEvaluator(lc, evaluatorManager);
+      if (evaluator) {
+        // Keyframes are stored in frames — use frame-based local time
+        const localTimeFrames = timelineTime - lc.startTime;
+        const x1 = evaluator.evaluate("x1", localTimeFrames);
+        const y1 = evaluator.evaluate("y1", localTimeFrames);
+        const x2 = evaluator.evaluate("x2", localTimeFrames);
+        const y2 = evaluator.evaluate("y2", localTimeFrames);
+        const sw = evaluator.evaluate("strokeWidth", localTimeFrames);
+        const op = evaluator.evaluate("opacity", localTimeFrames);
 
         if (!Number.isNaN(x1) || !Number.isNaN(y1) || !Number.isNaN(x2) || !Number.isNaN(y2)) {
           box = {
@@ -352,6 +373,17 @@ export function buildLayersForTime(input: LayerBuilderInput): LayerBuilderOutput
     // audio clips are skipped — not rendered visually
   }
 
+  for (const mediaClip of mediaClipsForRender) {
+    if ((visibleMediaAssetCounts.get(mediaClip.assetId) ?? 0) <= 1) {
+      continue;
+    }
+
+    mediaClip.assetId = mediaClip.id;
+    crossTransitionTextureMap.set(mediaClip.id, mediaClip.id);
+  }
+
+  // Convert frame-based timeline time to seconds for the RenderFrame
+  // Everything in frames — the frame builder and keyframe evaluator are unit-agnostic
   const frame = buildRenderFrame({
     mediaClips: mediaClipsForRender,
     textLayers,
@@ -376,62 +408,16 @@ export function buildLayersForTime(input: LayerBuilderInput): LayerBuilderOutput
 }
 
 /**
- * Calculate source time for a clip given timeline time.
+ * Calculate source time (in seconds) for a clip given timeline frame.
+ * All clip fields are in frames. Returns seconds for video frame extraction.
  */
 export function calculateSourceTime(
-  timelineTime: number,
+  timelineFrame: number,
   clip: { startTime: number; inPoint: number; speed?: number },
+  fps: FrameRate,
 ): number {
-  const clipLocalTime = timelineTime - clip.startTime;
+  const clipLocalFrames = timelineFrame - clip.startTime;
   const speed = clip.speed ?? 1;
-  return clip.inPoint + clipLocalTime * speed;
-}
-
-/**
- * Get all unique asset IDs from visible clips.
- * Useful for preloading textures.
- */
-export function getVisibleAssetIds(visibleClips: EditorClip[]): Set<string> {
-  const assetIds = new Set<string>();
-  for (const clip of visibleClips) {
-    if ("assetId" in clip) {
-      assetIds.add(clip.assetId);
-    }
-  }
-  return assetIds;
-}
-
-/**
- * Get all frames that need to be rendered for export.
- * Returns an array of { frameIndex, timelineTime } for each frame.
- */
-export function getExportFrames(
-  duration: number,
-  frameRate: number,
-): Array<{ frameIndex: number; timelineTime: number }> {
-  const frames: Array<{ frameIndex: number; timelineTime: number }> = [];
-  const frameDuration = 1 / frameRate;
-  const totalFrames = Math.ceil(duration * frameRate);
-
-  for (let i = 0; i < totalFrames; i++) {
-    frames.push({
-      frameIndex: i,
-      timelineTime: i * frameDuration,
-    });
-  }
-
-  return frames;
-}
-
-/**
- * Get all unique font families used in text clips.
- */
-export function getTextClipFontFamilies(clips: EditorClip[]): Set<string> {
-  const families = new Set<string>();
-  for (const clip of clips) {
-    if (clip.type === "text") {
-      families.add(clip.textStyle.font_family);
-    }
-  }
-  return families;
+  const sourceFrames = clip.inPoint + clipLocalFrames * speed;
+  return framesToSeconds(sourceFrames, fps);
 }

@@ -9,8 +9,8 @@ export const TRACK_HEADER_WIDTH = 150;
 /** Height of the time ruler at the top */
 export const RULER_HEIGHT = 40;
 
-/** Height of each track */
-export const TRACK_HEIGHT = 80;
+/** Default height of each track */
+export const DEFAULT_TRACK_HEIGHT = 60;
 
 /** Padding inside clips */
 export const CLIP_PADDING = 4;
@@ -18,14 +18,11 @@ export const CLIP_PADDING = 4;
 /** Snap threshold in pixels */
 export const SNAP_THRESHOLD = 10;
 
-/** Maximum zoom level (pixels per second) */
-export const MAX_ZOOM = 500;
+/** Maximum zoom level (pixels per frame) */
+export const MAX_ZOOM = 20;
 
-/** Minimum zoom level (pixels per second) */
-export const MIN_ZOOM = 1;
-
-/** Default zoom level (pixels per second) */
-export const DEFAULT_ZOOM = 50;
+/** Minimum zoom level (pixels per frame) */
+export const MIN_ZOOM = 0.03;
 
 /** Colors for the timeline */
 export const COLORS = {

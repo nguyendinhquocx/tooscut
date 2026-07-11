@@ -8,20 +8,24 @@
  * - If not keyframed: updates base value via onChange
  */
 
-import { NumericInput } from "../ui/numeric-input";
-import { KeyframeButton } from "./keyframe-button";
-import { useVideoEditorStore } from "../../state/video-editor-store";
-import type { AnimatableProperty } from "@tooscut/render-engine";
+import type { AnyAnimatableProperty } from "@tooscut/render-engine";
+
+import { cn } from "@/lib/utils";
+
 import {
   evaluateKeyframe,
   isAtKeyframe,
   isPropertyKeyframed,
   getKeyframeIndexAtTime,
 } from "../../lib/keyframe-utils";
+import { useVideoEditorStore } from "../../state/video-editor-store";
+import { NumericInput } from "../ui/numeric-input";
+import { ResetButton } from "../ui/reset-button";
+import { KeyframeButton } from "./keyframe-button";
 
 interface KeyframeInputProps {
   clipId: string;
-  property: AnimatableProperty;
+  property: AnyAnimatableProperty;
   /** Base value of the property (used when not keyframed) */
   baseValue: number;
   /** Minimum allowed value */
@@ -46,6 +50,8 @@ interface KeyframeInputProps {
   displayMultiplier?: number;
   /** Additional class names for the container */
   className?: string;
+  /** Custom reset handler (overrides default reset behavior) */
+  onReset?: () => void;
 }
 
 export function KeyframeInput({
@@ -63,8 +69,9 @@ export function KeyframeInput({
   showKeyframeButton = true,
   displayMultiplier = 1,
   className,
+  onReset: customReset,
 }: KeyframeInputProps) {
-  const currentTime = useVideoEditorStore((s) => s.currentTime);
+  const currentTime = useVideoEditorStore((s) => s.currentFrame);
   const clips = useVideoEditorStore((s) => s.clips);
   const addKeyframe = useVideoEditorStore((s) => s.addKeyframe);
   const updateKeyframe = useVideoEditorStore((s) => s.updateKeyframe);
@@ -109,9 +116,19 @@ export function KeyframeInput({
     }
   };
 
+  const removeAllKeyframesAction = useVideoEditorStore((s) => s.removeAllKeyframes);
+
   const handleReset = () => {
     if (defaultValue !== undefined) {
-      onChange(defaultValue);
+      // Remove all keyframes for this property if any exist
+      if (hasKeyframes) {
+        removeAllKeyframesAction(clipId, property);
+      }
+      if (customReset) {
+        customReset();
+      } else {
+        onChange(defaultValue);
+      }
     }
   };
 
@@ -123,8 +140,19 @@ export function KeyframeInput({
   // Store actual value for keyframe button (not display value)
   const currentActualValue = displayValue;
 
+  // Show reset when value has drifted from default (or has keyframes).
+  // Compare in display space (after multiplier + rounding to display precision)
+  // to avoid false positives from floating-point drift.
+  const displayRoundFactor = 10 ** precision;
+  const isDirty =
+    defaultValue !== undefined &&
+    (hasKeyframes ||
+      Math.round(displayValue * displayMultiplier * displayRoundFactor) !==
+        Math.round(defaultValue * displayMultiplier * displayRoundFactor));
+
   return (
-    <div className={`flex items-center gap-1 ${className ?? ""}`}>
+    <div className={cn("flex items-center gap-1", className)}>
+      {isDirty && <ResetButton onClick={handleReset} />}
       <NumericInput
         value={displayedValue}
         onChange={handleChange}

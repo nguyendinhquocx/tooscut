@@ -14,6 +14,7 @@ import {
   type ShapeBox,
   type LineBox,
 } from "@tooscut/render-engine";
+
 import type { EditorClip, TextClip, ShapeClip, LineClip } from "../../../state/video-editor-store";
 import type { MediaAsset } from "../../timeline/use-asset-store";
 import type { DisplayBounds } from "./types";
@@ -223,23 +224,6 @@ export function getEvaluatedLineBox(clip: LineClip, currentTime?: number): LineB
     y1: Number.isNaN(ey1) ? base.y1 : ey1,
     x2: Number.isNaN(ex2) ? base.x2 : ex2,
     y2: Number.isNaN(ey2) ? base.y2 : ey2,
-  };
-}
-
-/**
- * Get the project-space center of a clip's bounding box.
- * Used for snap target collection.
- */
-export function getClipProjectCenter(
-  clip: EditorClip,
-  evaluatedTransform: Partial<Transform>,
-  ctx: BoundsContext,
-): { x: number; y: number } | null {
-  const bounds = getClipDisplayBounds(clip, evaluatedTransform, ctx);
-  if (!bounds) return null;
-  return {
-    x: (bounds.x + bounds.width / 2) / ctx.displayScale,
-    y: (bounds.y + bounds.height / 2) / ctx.displayScale,
   };
 }
 

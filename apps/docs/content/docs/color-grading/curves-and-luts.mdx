@@ -1,0 +1,62 @@
+---
+title: Curves and LUTs
+description: Fine-tune color channels with curves and apply look-up tables (LUTs) in Tooscut.
+---
+
+Curves for manual per-channel adjustments. LUTs for pre-built looks.
+
+## Curves
+
+Reshape tonal response per channel.
+
+### Standard curves
+
+| Curve      | Controls                          |
+| ---------- | --------------------------------- |
+| **Master** | Overall brightness — all channels |
+| **Red**    | Red channel only                  |
+| **Green**  | Green channel only                |
+| **Blue**   | Blue channel only                 |
+
+Click to add control points. Drag up to brighten, down to darken. Horizontal axis: shadows (left) to highlights (right).
+
+### Advanced curves
+
+| Curve                         | Effect                                       |
+| ----------------------------- | -------------------------------------------- |
+| **Hue vs. Saturation**        | Boost or reduce saturation for specific hues |
+| **Hue vs. Hue**               | Shift one hue toward another                 |
+| **Hue vs. Luminance**         | Brighten or darken specific hues             |
+| **Luminance vs. Saturation**  | Adjust saturation based on brightness        |
+| **Saturation vs. Saturation** | Boost or reduce already-saturated areas      |
+
+### Example: S-curve contrast
+
+1. Add a **Curves** node.
+2. On the **Master** curve, add a point in the lower third — drag down.
+3. Add a point in the upper third — drag up.
+4. The S-shape deepens shadows and lifts highlights without clipping.
+
+## LUTs (Look-Up Tables)
+
+Pre-computed color transformations in `.cube` files. Common uses: film emulations, log-to-display conversions, creative looks.
+
+### Importing
+
+1. Import the `.cube` file via the asset panel (see [Importing Assets](/docs/basics/importing-assets)).
+2. Add a **LUT** node to the grading graph.
+3. Select the LUT from the node's dropdown.
+
+### Settings
+
+| Setting           | Description                                             |
+| ----------------- | ------------------------------------------------------- |
+| **LUT asset**     | Which imported .cube file to use                        |
+| **Interpolation** | Trilinear or tetrahedral (tetrahedral is more accurate) |
+| **Mix**           | Blend between original (0%) and LUT result (100%)       |
+
+Supports LUT sizes up to 64cubed.
+
+### Stacking curves and LUTs
+
+Common pattern: LUT for a base look, then curves after it for fine-tuning. Nodes process in order, so curves apply on top of the LUT output.

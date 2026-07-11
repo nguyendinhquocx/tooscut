@@ -1,0 +1,29 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oxc-project/oxc/main/npm/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "react", "import", "vitest"],
+  "rules": {
+    "no-unused-vars": "warn",
+    "no-console": "off",
+    "eqeqeq": ["error", "always", { "null": "ignore" }],
+    "no-var": "error",
+    "prefer-const": "warn",
+    "typescript/no-floating-promises": "error",
+    "typescript/no-misused-promises": "error",
+    "typescript/await-thenable": "error"
+  },
+  "settings": {
+    "react": {
+      "runtime": "automatic",
+      "version": "19.2.0"
+    }
+  },
+  "ignorePatterns": [
+    "node_modules",
+    "dist",
+    ".output",
+    "public/wasm",
+    "packages/*/wasm",
+    "*.min.js",
+    "crates"
+  ]
+}

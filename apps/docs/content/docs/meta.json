@@ -1,0 +1,12 @@
+{
+  "title": "Docs",
+  "pages": [
+    "getting-started",
+    "basics",
+    "media",
+    "animation",
+    "effects",
+    "color-grading",
+    "advanced"
+  ]
+}

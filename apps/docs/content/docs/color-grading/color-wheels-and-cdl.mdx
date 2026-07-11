@@ -1,0 +1,69 @@
+---
+title: Color Wheels and CDL
+description: Use color wheels and CDL (slope, offset, power) for primary color correction.
+---
+
+Two tools for primary correction: ASC-CDL (slope, offset, power) for numeric precision, and color wheels (lift, gamma, gain) for visual adjustments.
+
+## Primary Correction (CDL)
+
+Industry-standard ASC-CDL formula. Three operations applied per RGB channel:
+
+### Slope, Offset, Power
+
+| Parameter  | Effect                                                  | Analogy           |
+| ---------- | ------------------------------------------------------- | ----------------- |
+| **Slope**  | Multiplies pixel value — scales highlights and midtones | Gain / exposure   |
+| **Offset** | Adds to pixel value — lifts or lowers the entire range  | Brightness / lift |
+| **Power**  | Gamma curve — reshapes midtones without clipping        | Gamma / contrast  |
+
+Each has independent R, G, B controls for per-channel color cast correction.
+
+### Global controls
+
+| Control         | Effect                             |
+| --------------- | ---------------------------------- |
+| **Saturation**  | Global color intensity             |
+| **Exposure**    | Overall brightness multiplier      |
+| **Temperature** | Warm (yellow) to cool (blue) shift |
+| **Tint**        | Green to magenta shift             |
+| **Highlights**  | Recover or push bright areas       |
+| **Shadows**     | Lift or crush dark areas           |
+
+## Color Wheels
+
+Visual interface for color balance across three tonal ranges.
+
+### The three wheels
+
+| Wheel     | Tonal Range | Use for                         |
+| --------- | ----------- | ------------------------------- |
+| **Lift**  | Shadows     | Cool or warm the dark areas     |
+| **Gamma** | Midtones    | Shift the overall color balance |
+| **Gain**  | Highlights  | Tint the bright areas           |
+
+### Usage
+
+Polar coordinate controls:
+
+- **Drag the center point** toward a color to push that tonal range. Toward orange = warm shadows, toward blue = cool highlights.
+- **Distance from center** = intensity of the shift.
+- **Luminance slider** below each wheel adjusts brightness of that range independently of color.
+
+### Example: fixing white balance
+
+Blue color cast in footage:
+
+1. Add a **Color Wheels** node.
+2. Drag **Gamma** toward orange/yellow to neutralize.
+3. Adjust **Lift** if shadows are still too blue.
+4. Check highlights with **Gain**.
+
+## CDL vs. Color Wheels
+
+Both do primary correction — pick whichever fits:
+
+- **CDL** — precise numeric work, easy to copy values between shots.
+- **Color Wheels** — intuitive visual adjustments.
+
+Both nodes can be used on the same clip in the grading graph.

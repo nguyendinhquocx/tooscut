@@ -1,19 +1,19 @@
 "use client";
 
 import Konva from "konva";
-import { useCallback, useMemo, useRef, useState } from "react";
-import {
-  Group,
-  Image as KonvaImage,
-  Label,
-  Layer,
-  Line,
-  Rect,
-  Stage,
-  Tag,
-  Text,
-} from "react-konva";
+import React, { useCallback, useMemo, useRef, useState } from "react";
+import { Group, Layer, Line, Rect, Stage, Text } from "react-konva";
+import { useStoreWithEqualityFn } from "zustand/traditional";
+
+import type {
+  CrossTransitionDropPreview,
+  DropPreviewState,
+  TransitionDropPreview,
+} from "./canvas-timeline";
+
 import { useVideoEditorStore } from "../../state/video-editor-store";
+import { ClipNode, type ClipNodeProps } from "./clip-node";
+import { ClipRenderer, ClipRendererProps } from "./clip-renderer";
 import {
   CLIP_PADDING,
   COLORS,
@@ -22,41 +22,21 @@ import {
   RULER_HEIGHT,
   SNAP_THRESHOLD,
   TRACK_HEADER_WIDTH,
-  TRACK_HEIGHT,
 } from "./constants";
-import { findSnapTargets, snapTime } from "./snap-utils";
+import { CrossTransitionOverlays } from "./cross-transition-overlays";
+import { GridLinesTrackArea } from "./grid-lines-track-area";
+import { findSnapTargets, snapFrame } from "./snap-utils";
+import { TrackBackgrounds } from "./track-backgrounds";
+import { TrackHeaders } from "./track-headers";
+import { computeSplitLayout, yToSectionTrackIndex } from "./track-layout";
 import {
-  KonvaEyeIcon,
-  KonvaEyeOffIcon,
-  KonvaLockIcon,
-  KonvaLockOpenIcon,
-  KonvaVolume2Icon,
-  KonvaVolumeIcon,
-} from "./konva-icons";
-import {
-  getThumbnailsForClip,
-  useClipThumbnails,
-  type ClipThumbnailData,
-} from "./use-clip-thumbnails";
-import { useClipWaveforms, type WaveformData } from "./use-clip-waveform";
-import { WaveformDisplay } from "./waveform-display";
-
-interface TimelineTrack {
-  id: string;
-  fullId: string;
-  type: "video" | "audio";
-  name: string;
-  index: number;
-  pairedTrackId: string;
-  muted: boolean;
-  locked: boolean;
-}
-
-import type {
-  DropPreviewState,
-  TransitionDropPreview,
-  CrossTransitionDropPreview,
-} from "./canvas-timeline";
+  CrossTransitionResizeState,
+  TimelineTrack,
+  TransitionResizeState,
+  TrimState,
+} from "./types";
+import { getThumbnailsForClip, useClipThumbnails } from "./use-clip-thumbnails";
+import { useClipWaveforms } from "./use-clip-waveform";
 
 interface TimelineStageProps {
   width: number;
@@ -64,10 +44,11 @@ interface TimelineStageProps {
   dropPreview?: DropPreviewState | null;
   transitionDropPreview?: TransitionDropPreview | null;
   crossTransitionDropPreview?: CrossTransitionDropPreview | null;
+  onTrackContextMenu?: (trackId: string) => void;
 }
 
-/** Width of trim handles in pixels */
-const TRIM_HANDLE_WIDTH = 8;
+/** Width in pixels of the transition resize hit zone */
+const TRANSITION_HANDLE_THRESHOLD = 8;
 
 /** Minimum distance from edge to start a trim operation */
 const TRIM_THRESHOLD = 12;
@@ -97,84 +78,232 @@ interface DragState {
   }>;
 }
 
-interface TrimState {
-  clipId: string;
-  edge: "left" | "right";
-  startMouseX: number;
-  originalStartTime: number;
-  originalDuration: number;
-  originalInPoint: number;
-  speed: number;
-  assetDuration: number | undefined;
-  /** Whether this clip is backed by a media asset (video/audio/image). Text/shape clips are not. */
-  hasAsset: boolean;
-  // Linked clip info for visual feedback during trim
-  linkedClipId?: string;
-  linkedTrackIndex?: number;
-  // Multi-select trim
-  isMulti?: boolean;
-  multiClips?: Array<{
-    clipId: string;
-    originalStartTime: number;
-    originalDuration: number;
-    originalInPoint: number;
-    speed: number;
-    assetDuration: number | undefined;
-    hasAsset: boolean;
-    linkedClipId?: string;
-    linkedTrackIndex?: number;
-  }>;
-}
+/**
+ * Get grid interval in frames based on zoom level (pixels per frame) and fps.
+ * Returns frame counts for minor and major gridlines.
+ */
+function getGridInterval(
+  pixelsPerFrame: number,
+  fpsFloat: number,
+): { minor: number; major: number } {
+  const fps = Math.round(fpsFloat);
+  const pps = pixelsPerFrame * fpsFloat;
 
-interface TransitionResizeState {
-  clipId: string;
-  edge: "in" | "out";
-  startMouseX: number;
-  originalDuration: number;
-  clipDuration: number;
-}
-
-interface CrossTransitionResizeState {
-  transitionId: string;
-  edge: "left" | "right";
-  startMouseX: number;
-  originalDuration: number;
-  maxDuration: number;
-  boundary: number;
-  /** Maximum extension on the outgoing side (from boundary) */
-  totalMaxOut: number;
-  /** Maximum extension on the incoming side (from boundary) */
-  totalMaxIn: number;
+  // Very high zoom: individual frames visible
+  if (pps >= 600) return { minor: 1, major: Math.max(1, Math.round(fps / 6)) };
+  if (pps >= 400) return { minor: 1, major: Math.max(1, Math.round(fps / 2)) };
+  // High zoom: sub-second intervals
+  if (pps >= 200) return { minor: Math.max(1, Math.round(fps / 10)), major: fps };
+  if (pps >= 100) return { minor: Math.max(1, Math.round(fps / 2)), major: fps * 5 };
+  // Medium zoom: second intervals
+  if (pps >= 50) return { minor: fps, major: fps * 5 };
+  if (pps >= 20) return { minor: fps * 2, major: fps * 10 };
+  // Low zoom: multi-second intervals
+  if (pps >= 10) return { minor: fps * 5, major: fps * 30 };
+  if (pps >= 3) return { minor: fps * 10, major: fps * 60 };
+  // Very low zoom: minute intervals
+  return { minor: fps * 30, major: fps * 120 };
 }
 
 /**
- * Get grid interval based on zoom level.
+ * Format a frame number as timecode. Adapts format based on magnitude:
+ * - Short durations: SS:FF (e.g., "5:12")
+ * - Medium: M:SS:FF (e.g., "2:05:12")
+ * - Long: H:MM:SS (e.g., "1:02:05")
  */
-function getGridInterval(pixelsPerSecond: number): {
-  minor: number;
-  major: number;
-} {
-  if (pixelsPerSecond >= 200) return { minor: 0.1, major: 1 };
-  if (pixelsPerSecond >= 100) return { minor: 0.5, major: 5 };
-  if (pixelsPerSecond >= 50) return { minor: 1, major: 5 };
-  if (pixelsPerSecond >= 20) return { minor: 2, major: 10 };
-  if (pixelsPerSecond >= 10) return { minor: 5, major: 30 };
-  return { minor: 10, major: 60 };
-}
+function formatFrameTimecode(frame: number, fpsFloat: number): string {
+  const totalSeconds = frame / fpsFloat;
+  const hrs = Math.floor(totalSeconds / 3600);
+  const mins = Math.floor((totalSeconds % 3600) / 60);
+  const secs = Math.floor(totalSeconds % 60);
+  const ff = Math.round(frame % fpsFloat);
 
-/**
- * Format time as MM:SS or MM:SS.ms
- */
-function formatTime(seconds: number, showMs = false): string {
-  const mins = Math.floor(seconds / 60);
-  const secs = Math.floor(seconds % 60);
-  const ms = Math.floor((seconds % 1) * 100);
-
-  if (showMs) {
-    return `${mins}:${secs.toString().padStart(2, "0")}.${ms.toString().padStart(2, "0")}`;
+  if (hrs > 0) {
+    return `${hrs}:${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
   }
-  return `${mins}:${secs.toString().padStart(2, "0")}`;
+  if (mins > 0) {
+    return `${mins}:${secs.toString().padStart(2, "0")}`;
+  }
+  return `${secs}:${ff.toString().padStart(2, "0")}`;
 }
+
+// ---------------------------------------------------------------------------
+// Memoized sub-components extracted from TimelineStage JSX
+// ---------------------------------------------------------------------------
+
+interface DragPreviewClipsProps {
+  clips: ReturnType<typeof useVideoEditorStore.getState>["clips"];
+  allTracks: TimelineTrack[];
+  section: "video" | "audio";
+  dragPreview: ClipRendererProps["dragPreview"];
+  buildClipNodeProps: ClipRendererProps["buildClipNodeProps"];
+  xToFrame: (x: number) => number;
+}
+
+const DragPreviewClips = React.memo(function DragPreviewClips({
+  clips,
+  allTracks,
+  section,
+  dragPreview,
+  buildClipNodeProps,
+  xToFrame,
+}: DragPreviewClipsProps) {
+  if (!dragPreview) return null;
+
+  const renderClipPreview = (clipId: string, trackIndex: number, x: number, keySuffix: string) => {
+    const clip = clips.find((c) => c.id === clipId);
+    if (!clip) return null;
+    const track = allTracks[trackIndex];
+    if (track && track.type !== section) return null;
+    const newStartTime = xToFrame(x);
+    const props = buildClipNodeProps(clip, trackIndex, {
+      overrideStartTime: newStartTime,
+      overrideTrackIndex: trackIndex,
+    });
+    if (!props) return null;
+    return <ClipNode key={props.clipId + keySuffix} {...props} />;
+  };
+
+  return (
+    <>
+      {dragPreview.isMulti && dragPreview.multiClips
+        ? dragPreview.multiClips.map((mc) =>
+            renderClipPreview(mc.clipId, mc.trackIndex, mc.x, "-drag"),
+          )
+        : renderClipPreview(dragPreview.clipId, dragPreview.trackIndex, dragPreview.x, "-drag")}
+
+      {/* Drag preview for linked clip (single-clip drag only) */}
+      {!dragPreview.isMulti &&
+        dragPreview.linkedClipId &&
+        dragPreview.linkedX !== undefined &&
+        dragPreview.linkedTrackIndex !== undefined &&
+        renderClipPreview(
+          dragPreview.linkedClipId,
+          dragPreview.linkedTrackIndex,
+          dragPreview.linkedX,
+          "-drag-linked",
+        )}
+    </>
+  );
+});
+
+const SnapLines = React.memo(function SnapLines({
+  snapLines,
+  frameToX,
+  width,
+  height,
+}: {
+  snapLines: number[];
+  frameToX: (frame: number) => number;
+  width: number;
+  height: number;
+}) {
+  return (
+    <>
+      {snapLines.map((snapTime) => {
+        const sx = frameToX(snapTime);
+        if (sx < TRACK_HEADER_WIDTH || sx > width) return null;
+        return (
+          <Line
+            key={`snap-${snapTime}`}
+            points={[sx, RULER_HEIGHT, sx, height]}
+            stroke={COLORS.snapLine}
+            strokeWidth={1}
+            dash={[4, 4]}
+          />
+        );
+      })}
+    </>
+  );
+});
+
+/**
+ * Playhead component that subscribes to currentFrame independently,
+ * so playhead updates during playback don't re-render the entire timeline.
+ */
+const Playhead = React.memo(function Playhead({
+  width,
+  height,
+}: {
+  width: number;
+  height: number;
+}) {
+  const currentFrame = useVideoEditorStore((s) => s.currentFrame);
+  const zoom = useVideoEditorStore((s) => s.zoom);
+  const scrollX = useVideoEditorStore((s) => s.scrollX);
+
+  const playheadX = TRACK_HEADER_WIDTH + currentFrame * zoom - scrollX;
+
+  if (playheadX < TRACK_HEADER_WIDTH || playheadX > width) return null;
+
+  return (
+    <Group>
+      {/* Playhead head (triangle) */}
+      <Line
+        points={[
+          playheadX - 6,
+          0,
+          playheadX + 6,
+          0,
+          playheadX + 6,
+          10,
+          playheadX,
+          18,
+          playheadX - 6,
+          10,
+        ]}
+        closed
+        fill={COLORS.playhead}
+      />
+      {/* Playhead line */}
+      <Line
+        points={[playheadX, RULER_HEIGHT - 24, playheadX, height]}
+        stroke={COLORS.playheadLine}
+        strokeWidth={2}
+      />
+    </Group>
+  );
+});
+
+const RulerMarkers = React.memo(function RulerMarkers({
+  gridLines,
+  fpsFloat,
+}: {
+  gridLines: Array<{ x: number; isMajor: boolean; frame: number }>;
+  fpsFloat: number;
+}) {
+  return (
+    <>
+      {gridLines.map((line, i) => {
+        const fps = Math.round(fpsFloat);
+        const isOnSecondBoundary = fps > 0 && line.frame % fps === 0;
+        // Show text only on major lines that fall on a whole-second boundary
+        const showLabel = line.isMajor && isOnSecondBoundary;
+        // Major sub-second lines get a medium tick (between major and minor height)
+        const tickTop = showLabel ? 20 : line.isMajor ? 25 : 30;
+
+        return (
+          <Group key={i}>
+            <Line
+              points={[line.x, tickTop, line.x, RULER_HEIGHT]}
+              stroke={line.isMajor ? COLORS.rulerMajorLine : COLORS.rulerMinorLine}
+              strokeWidth={1}
+            />
+            {showLabel && (
+              <Text
+                x={line.x + 4}
+                y={8}
+                text={formatFrameTimecode(line.frame, fpsFloat)}
+                fontSize={10}
+                fill={COLORS.rulerText}
+              />
+            )}
+          </Group>
+        );
+      })}
+    </>
+  );
+});
 
 export function TimelineStage({
   width,
@@ -182,6 +311,7 @@ export function TimelineStage({
   dropPreview,
   transitionDropPreview,
   crossTransitionDropPreview,
+  onTrackContextMenu,
 }: TimelineStageProps) {
   const stageRef = useRef<Konva.Stage>(null);
 
@@ -233,6 +363,8 @@ export function TimelineStage({
     clipId: string;
     startTime: number;
     duration: number;
+    /** Updated inPoint for left-trim preview (frames) */
+    inPoint?: number;
     // Linked clip preview
     linkedClipId?: string;
     linkedTrackIndex?: number;
@@ -242,6 +374,7 @@ export function TimelineStage({
       clipId: string;
       startTime: number;
       duration: number;
+      inPoint?: number;
       trackIndex: number;
       linkedClipId?: string;
       linkedTrackIndex?: number;
@@ -313,20 +446,63 @@ export function TimelineStage({
     trackHeight: number;
   } | null>(null);
 
+  // Track height resize state
+  const trackResizeRef = useRef<{
+    trackIndex: number;
+    trackId: string;
+    startY: number;
+    originalHeight: number;
+    /** Video tracks resize from top edge (drag up = grow), audio from bottom (drag down = grow) */
+    invertDelta: boolean;
+  } | null>(null);
+
+  // Track zoom gesture — skip expensive drawing during continuous zoom
+  const [isZooming, setIsZooming] = useState(false);
+  const zoomTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prevZoomRef = useRef(0);
+
   // Store state
   const zoom = useVideoEditorStore((s) => s.zoom);
+
+  // Detect zoom gestures — set isZooming=true during continuous zoom, clear after 150ms idle
+  if (prevZoomRef.current !== 0 && prevZoomRef.current !== zoom) {
+    if (!isZooming) setIsZooming(true);
+    if (zoomTimerRef.current) clearTimeout(zoomTimerRef.current);
+    zoomTimerRef.current = setTimeout(() => setIsZooming(false), 150);
+  }
+  prevZoomRef.current = zoom;
+
   const scrollX = useVideoEditorStore((s) => s.scrollX);
   const scrollY = useVideoEditorStore((s) => s.scrollY);
-  const currentTime = useVideoEditorStore((s) => s.currentTime);
-  const duration = useVideoEditorStore((s) => s.duration);
+  const duration = useVideoEditorStore((s) => s.durationFrames);
+  const fps = useVideoEditorStore((s) => s.settings.fps);
+  const fpsFloat = fps.numerator / fps.denominator;
   const tracks = useVideoEditorStore((s) => s.tracks);
-  const clips = useVideoEditorStore((s) => s.clips);
+
+  const clips = useStoreWithEqualityFn(
+    useVideoEditorStore,
+    (s) => s.clips,
+    (a, b) => {
+      if (a.length !== b.length) return false;
+      for (let i = 0; i < a.length; i++) {
+        const ac = a[i];
+        const bc = b[i];
+        if (ac !== bc) {
+          return false;
+        }
+      }
+
+      return true;
+    },
+  );
   const selectedClipIds = useVideoEditorStore((s) => s.selectedClipIds);
 
   // Actions
   const setZoom = useVideoEditorStore((s) => s.setZoom);
   const setScrollX = useVideoEditorStore((s) => s.setScrollX);
   const setScrollY = useVideoEditorStore((s) => s.setScrollY);
+  const trackHeightsMap = useVideoEditorStore((s) => s.trackHeights);
+  const setTrackHeight = useVideoEditorStore((s) => s.setTrackHeight);
   const seekTo = useVideoEditorStore((s) => s.seekTo);
   const setSelectedClipIds = useVideoEditorStore((s) => s.setSelectedClipIds);
   const clearSelection = useVideoEditorStore((s) => s.clearSelection);
@@ -335,8 +511,6 @@ export function TimelineStage({
   const trimLeft = useVideoEditorStore((s) => s.trimLeft);
   const trimRight = useVideoEditorStore((s) => s.trimRight);
   const batchTrimClips = useVideoEditorStore((s) => s.batchTrimClips);
-  const toggleTrackMuted = useVideoEditorStore((s) => s.toggleTrackMuted);
-  const toggleTrackLocked = useVideoEditorStore((s) => s.toggleTrackLocked);
   const activeTool = useVideoEditorStore((s) => s.activeTool);
   const splitClipAtTime = useVideoEditorStore((s) => s.splitClipAtTime);
   const setClipTransitionIn = useVideoEditorStore((s) => s.setClipTransitionIn);
@@ -344,40 +518,32 @@ export function TimelineStage({
   const selectedTransition = useVideoEditorStore((s) => s.selectedTransition);
   const setSelectedTransition = useVideoEditorStore((s) => s.setSelectedTransition);
   const crossTransitions = useVideoEditorStore((s) => s.crossTransitions);
-  const selectedCrossTransition = useVideoEditorStore((s) => s.selectedCrossTransition);
   const setSelectedCrossTransition = useVideoEditorStore((s) => s.setSelectedCrossTransition);
   const updateCrossTransitionDuration = useVideoEditorStore((s) => s.updateCrossTransitionDuration);
 
-  // Combine tracks with full IDs - video tracks first (sorted by index descending), then audio tracks (sorted by index ascending)
-  const allTracks = useMemo<TimelineTrack[]>(() => {
-    const videoTracksFiltered = tracks
+  // Build track arrays:
+  // - Video: sorted descending by index (V3 on top, V1 at bottom near divider)
+  // - Audio: sorted ascending by index (A1 on top near divider, A3 at bottom)
+  // This creates the traditional NLE "butterfly" layout where V1 and A1 are adjacent.
+  // allTracks = [...videoTracks, ...audioTracks]
+  const { videoTracks, audioTracks, allTracks } = useMemo(() => {
+    const toTimelineTrack = (t: (typeof tracks)[0]): TimelineTrack => ({
+      id: t.id,
+      fullId: t.id,
+      type: t.type,
+      name: t.name || `${t.type === "video" ? "Video" : "Audio"} ${t.index + 1}`,
+      muted: t.muted,
+      locked: t.locked,
+    });
+    const video = tracks
       .filter((t) => t.type === "video")
-      .sort((a, b) => b.index - a.index);
-    const audioTracksFiltered = tracks
+      .sort((a, b) => b.index - a.index)
+      .map(toTimelineTrack);
+    const audio = tracks
       .filter((t) => t.type === "audio")
-      .sort((a, b) => a.index - b.index);
-    return [
-      ...videoTracksFiltered.map((t) => ({
-        id: t.id,
-        fullId: t.id,
-        type: "video" as const,
-        name: t.name || `Video ${t.index + 1}`,
-        index: t.index,
-        pairedTrackId: t.pairedTrackId,
-        muted: t.muted,
-        locked: t.locked,
-      })),
-      ...audioTracksFiltered.map((t) => ({
-        id: t.id,
-        fullId: t.id,
-        type: "audio" as const,
-        name: t.name || `Audio ${t.index + 1}`,
-        index: t.index,
-        pairedTrackId: t.pairedTrackId,
-        muted: t.muted,
-        locked: t.locked,
-      })),
-    ];
+      .sort((a, b) => a.index - b.index)
+      .map(toTimelineTrack);
+    return { videoTracks: video, audioTracks: audio, allTracks: [...video, ...audio] };
   }, [tracks]);
 
   // Memoize clips data for thumbnail hook to prevent infinite loops
@@ -407,49 +573,117 @@ export function TimelineStage({
   const waveformMap = useClipWaveforms(thumbnailClips);
 
   // Coordinate conversion
-  const timeToX = useCallback(
+  // Coordinate conversion
+  const frameToX = useCallback(
     (time: number) => TRACK_HEADER_WIDTH + time * zoom - scrollX,
     [zoom, scrollX],
   );
 
-  const xToTime = useCallback(
+  const xToFrame = useCallback(
     (x: number) => (x - TRACK_HEADER_WIDTH + scrollX) / zoom,
     [zoom, scrollX],
   );
 
-  const trackIndexToY = useCallback(
-    (index: number) => RULER_HEIGHT + index * TRACK_HEIGHT - scrollY,
-    [scrollY],
+  // Compute split layout (video section + audio section with mirrored heights)
+  const splitLayout = useMemo(
+    () => computeSplitLayout(videoTracks, audioTracks, trackHeightsMap),
+    [videoTracks, audioTracks, trackHeightsMap],
   );
 
+  // Each section gets half the available height below the ruler
+  const sectionHeight = Math.floor((height - RULER_HEIGHT) / 2);
+  const videoSectionTop = RULER_HEIGHT;
+  const audioSectionTop = RULER_HEIGHT + sectionHeight;
+
+  // Video section is bottom-aligned: V1 sits at the bottom near the divider.
+  // Scrolling (increasing scrollY) reveals higher-numbered tracks from the top.
+  // videoBaseY is the Y offset of the video content group.
+  const videoContentH = splitLayout.video.totalContentHeight;
+  const videoBaseY = videoSectionTop + sectionHeight - videoContentH + scrollY;
+
+  // Audio section is top-aligned: A1 sits at the top near the divider.
+  // Scrolling reveals higher-numbered tracks from the bottom.
+  const audioBaseY = audioSectionTop - scrollY;
+
+  /**
+   * Convert an allTracks index to screen Y.
+   * Video tracks (indices 0..videoTrackCount-1) render in the top section (bottom-aligned).
+   * Audio tracks (indices videoTrackCount..end) render in the bottom section (top-aligned).
+   */
+  const trackIndexToY = useCallback(
+    (index: number) => {
+      const numVideo = splitLayout.videoTrackCount;
+      if (index < numVideo) {
+        return videoBaseY + (splitLayout.video.trackYOffsets[index] ?? 0);
+      }
+      const audioIdx = index - numVideo;
+      return audioBaseY + (splitLayout.audio.trackYOffsets[audioIdx] ?? 0);
+    },
+    [splitLayout, videoBaseY, audioBaseY],
+  );
+
+  /**
+   * Convert screen Y to an allTracks index.
+   * Returns -1 if outside any track.
+   */
   const yToTrackIndex = useCallback(
-    (y: number) => Math.floor((y - RULER_HEIGHT + scrollY) / TRACK_HEIGHT),
-    [scrollY],
+    (y: number) => {
+      const numVideo = splitLayout.videoTrackCount;
+      if (y >= videoSectionTop && y < audioSectionTop) {
+        // In video section — content is bottom-aligned
+        const localY = y - videoBaseY;
+        const idx = yToSectionTrackIndex(localY, splitLayout.video);
+        return idx;
+      }
+      if (y >= audioSectionTop) {
+        // In audio section — content is top-aligned
+        const localY = y - audioBaseY;
+        const idx = yToSectionTrackIndex(localY, splitLayout.audio);
+        return idx >= 0 ? idx + numVideo : -1;
+      }
+      return -1;
+    },
+    [splitLayout, videoSectionTop, audioSectionTop, videoBaseY, audioBaseY],
+  );
+
+  const getTrackHeight = useCallback(
+    (index: number) => {
+      const numVideo = splitLayout.videoTrackCount;
+      if (index < numVideo) {
+        return splitLayout.video.trackHeights[index] ?? 80;
+      }
+      return splitLayout.audio.trackHeights[index - numVideo] ?? 80;
+    },
+    [splitLayout],
   );
 
   // Calculate content dimensions
   const contentWidth = TRACK_HEADER_WIDTH + Math.max(duration, 60) * zoom;
-  const totalHeight = RULER_HEIGHT + allTracks.length * TRACK_HEIGHT;
+  // Total scrollable height within each section (used for scroll bounds)
+  const sectionContentHeight = Math.max(
+    splitLayout.video.totalContentHeight,
+    splitLayout.audio.totalContentHeight,
+  );
 
-  // Generate grid lines for ruler
+  // Generate grid lines for ruler (in frames)
   const gridLines = useMemo(() => {
-    const { minor, major } = getGridInterval(zoom);
-    const lines: Array<{ x: number; isMajor: boolean; time: number }> = [];
-    const startTime = Math.floor(scrollX / zoom / minor) * minor;
-    const endTime = Math.ceil((scrollX + width) / zoom / minor) * minor;
+    const { minor, major } = getGridInterval(zoom, fpsFloat);
+    // Ensure minor is at least 1 frame
+    const minorStep = Math.max(1, minor);
+    const majorStep = Math.max(1, major);
+    const lines: Array<{ x: number; isMajor: boolean; frame: number }> = [];
+    const startFrame = Math.floor(scrollX / zoom / minorStep) * minorStep;
+    const endFrame = Math.ceil((scrollX + width) / zoom / minorStep) * minorStep;
+    const maxFrame = Math.max(duration, Math.round(60 * fpsFloat));
 
-    for (
-      let time = startTime;
-      time <= endTime && time <= Math.max(duration, 60) + 10;
-      time += minor
-    ) {
-      if (time < 0) continue;
-      const x = timeToX(time);
+    for (let f = startFrame; f <= endFrame && f <= maxFrame + minorStep; f += minorStep) {
+      if (f < 0) continue;
+      const x = frameToX(f);
       if (x < TRACK_HEADER_WIDTH || x > width) continue;
-      lines.push({ x, isMajor: Math.abs(time % major) < 0.001, time });
+      lines.push({ x, isMajor: majorStep > 0 && f % majorStep === 0, frame: f });
     }
     return lines;
-  }, [scrollX, zoom, width, duration, timeToX]);
+  }, [scrollX, zoom, width, duration, fpsFloat, frameToX]);
 
   // Handle wheel for zoom/scroll
   const handleWheel = useCallback(
@@ -473,25 +707,34 @@ export function TimelineStage({
         setZoom(newZoom);
         setScrollX(newScrollX);
       } else {
-        // Scroll: vertical wheel (deltaY) scrolls horizontally through time,
-        // horizontal wheel/trackpad (deltaX) also scrolls horizontally,
-        // shift+wheel scrolls vertically between tracks.
+        // Scroll: deltaY scrolls tracks vertically, deltaX scrolls time horizontally.
+        // Shift+wheel swaps: deltaY scrolls horizontally.
         if (evt.shiftKey) {
-          const verticalDelta = evt.deltaY;
-          if (Math.abs(verticalDelta) > 0) {
-            const newScrollY = Math.max(
-              0,
-              Math.min(Math.max(0, totalHeight - height + RULER_HEIGHT), scrollY + verticalDelta),
-            );
-            setScrollY(newScrollY);
-          }
-        } else {
-          const horizontalDelta = evt.deltaX + evt.deltaY;
+          const horizontalDelta = evt.deltaY;
           if (Math.abs(horizontalDelta) > 0) {
             const newScrollX = Math.max(
               0,
               Math.min(contentWidth - width, scrollX + horizontalDelta),
             );
+            setScrollX(newScrollX);
+          }
+        } else {
+          if (Math.abs(evt.deltaY) > 0) {
+            // Video section is bottom-aligned, so scrolling is inverted:
+            // scroll down (deltaY > 0) in video section should decrease scrollY
+            // to reveal higher-numbered tracks from the top.
+            // Audio section scrolls normally.
+            const maxScrollY = Math.max(0, sectionContentHeight - sectionHeight);
+            const stage = e.target.getStage();
+            const pointerPos = stage?.getPointerPosition();
+            const pointerY = pointerPos?.y ?? 0;
+            const inVideoSection = pointerY >= videoSectionTop && pointerY < audioSectionTop;
+            const effectiveDelta = inVideoSection ? -evt.deltaY : evt.deltaY;
+            const newScrollY = Math.max(0, Math.min(maxScrollY, scrollY + effectiveDelta));
+            setScrollY(newScrollY);
+          }
+          if (Math.abs(evt.deltaX) > 0) {
+            const newScrollX = Math.max(0, Math.min(contentWidth - width, scrollX + evt.deltaX));
             setScrollX(newScrollX);
           }
         }
@@ -502,12 +745,14 @@ export function TimelineStage({
       scrollX,
       scrollY,
       contentWidth,
-      totalHeight,
+      sectionContentHeight,
+      sectionHeight,
       width,
-      height,
       setZoom,
       setScrollX,
       setScrollY,
+      videoSectionTop,
+      audioSectionTop,
     ],
   );
 
@@ -518,20 +763,20 @@ export function TimelineStage({
       if (trackIndex < 0 || trackIndex >= allTracks.length) return null;
 
       const track = allTracks[trackIndex];
-      const time = xToTime(x);
+      const frame = xToFrame(x);
 
       for (const clip of clips) {
         if (clip.trackId !== track.fullId) continue;
 
         const clipEnd = clip.startTime + clip.duration;
-        if (time >= clip.startTime && time <= clipEnd) {
+        if (frame >= clip.startTime && frame <= clipEnd) {
           return { clip, trackIndex };
         }
       }
 
       return null;
     },
-    [clips, allTracks, xToTime, yToTrackIndex],
+    [clips, allTracks, xToFrame, yToTrackIndex],
   );
 
   // Determine if mouse is near a trim handle
@@ -550,9 +795,6 @@ export function TimelineStage({
     },
     [],
   );
-
-  /** Width in pixels of the transition resize hit zone */
-  const TRANSITION_HANDLE_THRESHOLD = 8;
 
   // Check if mouse is on a transition resize handle (the inner edge of a transition overlay)
   const getTransitionResizeEdge = useCallback(
@@ -593,10 +835,10 @@ export function TimelineStage({
         // Use actual clip overlap region
         const overlapStart = incoming.startTime;
         const overlapEnd = outgoing.startTime + outgoing.duration;
-        const ctX = timeToX(overlapStart);
+        const ctX = frameToX(overlapStart);
         const ctWidth = (overlapEnd - overlapStart) * zoom;
         const ctY = trackIndexToY(trackIndex) + CLIP_PADDING;
-        const ctHeight = TRACK_HEIGHT - CLIP_PADDING * 2;
+        const ctHeight = getTrackHeight(trackIndex) - CLIP_PADDING * 2;
 
         if (x >= ctX && x <= ctX + ctWidth && y >= ctY && y <= ctY + ctHeight) {
           // Check if near left or right edge for resize
@@ -610,7 +852,7 @@ export function TimelineStage({
       }
       return null;
     },
-    [crossTransitions, clips, allTracks, timeToX, trackIndexToY, zoom],
+    [crossTransitions, clips, allTracks, frameToX, trackIndexToY, getTrackHeight, zoom],
   );
 
   // Handle mouse down on stage
@@ -633,9 +875,32 @@ export function TimelineStage({
       // Clicking on ruler - start playhead drag
       if (pos.y < RULER_HEIGHT && pos.x > TRACK_HEADER_WIDTH) {
         isDraggingPlayheadRef.current = true;
-        const time = Math.max(0, Math.min(duration, xToTime(pos.x)));
-        seekTo(time);
+        const frame = Math.max(0, Math.min(duration, xToFrame(pos.x)));
+        seekTo(frame);
         return;
+      }
+
+      // Check if clicking on a track resize handle
+      // Video tracks: top edge (away from divider). Audio tracks: bottom edge.
+      if (pos.x < TRACK_HEADER_WIDTH && pos.y > RULER_HEIGHT) {
+        const RESIZE_ZONE = 6;
+        const numVideo = splitLayout.videoTrackCount;
+        for (let i = 0; i < allTracks.length; i++) {
+          const isVideo = i < numVideo;
+          const trackY = trackIndexToY(i);
+          const edgeY = isVideo ? trackY : trackY + getTrackHeight(i);
+          if (Math.abs(pos.y - edgeY) <= RESIZE_ZONE) {
+            trackResizeRef.current = {
+              trackIndex: i,
+              trackId: allTracks[i].id,
+              startY: pos.y,
+              originalHeight: getTrackHeight(i),
+              invertDelta: isVideo,
+            };
+            setCursor("ns-resize");
+            return;
+          }
+        }
       }
 
       // Check if clicking on a cross transition overlay (before clip check)
@@ -721,12 +986,12 @@ export function TimelineStage({
 
         // Razor tool: split clip at click position
         if (activeTool === "razor") {
-          const splitTime = xToTime(pos.x);
+          const splitTime = xToFrame(pos.x);
           splitClipAtTime(clip.id, splitTime);
           return;
         }
 
-        const clipX = timeToX(clip.startTime);
+        const clipX = frameToX(clip.startTime);
         const clipWidth = clip.duration * zoom;
 
         // Check for transition resize handle or transition body click
@@ -804,7 +1069,11 @@ export function TimelineStage({
                 linkedTrackIndex: selLinkedTrackIndex,
               });
             }
-            snapTargetsRef.current = findSnapTargets(clips, excludeIds, currentTime);
+            snapTargetsRef.current = findSnapTargets(
+              clips,
+              excludeIds,
+              useVideoEditorStore.getState().currentFrame,
+            );
             // Use anchor clip for the primary trim state fields
             const anchorLinked = clips.find(
               (c) => c.linkedClipId === clip.id || c.id === clip.linkedClipId,
@@ -837,7 +1106,11 @@ export function TimelineStage({
               : undefined;
             const excludeIds = new Set([clip.id]);
             if (linkedClipForTrim) excludeIds.add(linkedClipForTrim.id);
-            snapTargetsRef.current = findSnapTargets(clips, excludeIds, currentTime);
+            snapTargetsRef.current = findSnapTargets(
+              clips,
+              excludeIds,
+              useVideoEditorStore.getState().currentFrame,
+            );
             trimStateRef.current = {
               clipId: clip.id,
               edge: trimEdge,
@@ -887,7 +1160,11 @@ export function TimelineStage({
               linkedOriginalTrackIndex: selLinkedTrackIndex,
             });
           }
-          snapTargetsRef.current = findSnapTargets(clips, excludeIds, currentTime);
+          snapTargetsRef.current = findSnapTargets(
+            clips,
+            excludeIds,
+            useVideoEditorStore.getState().currentFrame,
+          );
 
           const linkedClip = clips.find(
             (c) => c.linkedClipId === clip.id || c.id === clip.linkedClipId,
@@ -918,7 +1195,11 @@ export function TimelineStage({
             : undefined;
           const excludeIds = new Set([clip.id]);
           if (linkedClip) excludeIds.add(linkedClip.id);
-          snapTargetsRef.current = findSnapTargets(clips, excludeIds, currentTime);
+          snapTargetsRef.current = findSnapTargets(
+            clips,
+            excludeIds,
+            useVideoEditorStore.getState().currentFrame,
+          );
 
           dragStateRef.current = {
             clipId: clip.id,
@@ -950,15 +1231,14 @@ export function TimelineStage({
     },
     [
       duration,
-      xToTime,
+      xToFrame,
       zoom,
-      timeToX,
+      frameToX,
       getClipAtPosition,
       getTrimEdge,
       seekTo,
       setSelectedClipIds,
       clearSelection,
-      currentTime,
       clips,
       allTracks,
       activeTool,
@@ -970,6 +1250,9 @@ export function TimelineStage({
       selectedClipIds,
       scrollX,
       scrollY,
+      splitLayout.videoTrackCount,
+      getTrackHeight,
+      trackIndexToY,
     ],
   );
 
@@ -991,10 +1274,23 @@ export function TimelineStage({
         return;
       }
 
+      // Track height resize
+      if (trackResizeRef.current) {
+        const rawDelta = pos.y - trackResizeRef.current.startY;
+        // Video: dragging up (negative delta) increases height; audio: dragging down increases
+        const delta = trackResizeRef.current.invertDelta ? -rawDelta : rawDelta;
+        const newHeight = Math.max(
+          40,
+          Math.min(300, trackResizeRef.current.originalHeight + delta),
+        );
+        setTrackHeight(trackResizeRef.current.trackId, newHeight);
+        return;
+      }
+
       // Playhead dragging
       if (isDraggingPlayheadRef.current) {
-        const time = Math.max(0, Math.min(duration, xToTime(pos.x)));
-        seekTo(time);
+        const frame = Math.max(0, Math.min(duration, xToFrame(pos.x)));
+        seekTo(frame);
         return;
       }
 
@@ -1032,8 +1328,8 @@ export function TimelineStage({
             } else {
               anchorNewStart = Math.max(0, originalStartTime + deltaTime);
             }
-            const snapResult = snapTime(anchorNewStart, snapTargetsRef.current, thresholdTime);
-            anchorNewStart = snapResult.time;
+            const snapResult = snapFrame(anchorNewStart, snapTargetsRef.current, thresholdTime);
+            anchorNewStart = snapResult.frame;
             setSnapLines(snapResult.snapLines);
             const anchorDelta = anchorNewStart - originalStartTime;
 
@@ -1049,7 +1345,7 @@ export function TimelineStage({
                 clipNewStart = Math.max(0, mc.originalStartTime + anchorDelta);
               }
               const clipNewDuration = mc.originalStartTime + mc.originalDuration - clipNewStart;
-              if (clipNewDuration < 0.1) continue;
+              if (clipNewDuration < 1) continue;
               const clipTrackIndex = allTracks.findIndex(
                 (t) => t.fullId === clips.find((c) => c.id === mc.clipId)?.trackId,
               );
@@ -1057,6 +1353,7 @@ export function TimelineStage({
                 clipId: mc.clipId,
                 startTime: clipNewStart,
                 duration: clipNewDuration,
+                inPoint: mc.originalInPoint + (clipNewStart - mc.originalStartTime) * mc.speed,
                 trackIndex: clipTrackIndex,
                 linkedClipId: mc.linkedClipId,
                 linkedTrackIndex: mc.linkedTrackIndex,
@@ -1064,11 +1361,12 @@ export function TimelineStage({
             }
 
             const anchorNewDuration = originalStartTime + originalDuration - anchorNewStart;
-            if (anchorNewDuration >= 0.1) {
+            if (anchorNewDuration >= 1) {
               setTrimPreview({
                 clipId,
                 startTime: anchorNewStart,
                 duration: anchorNewDuration,
+                inPoint: originalInPoint + (anchorNewStart - originalStartTime) * speed,
                 linkedClipId,
                 linkedTrackIndex,
                 isMulti: true,
@@ -1086,10 +1384,10 @@ export function TimelineStage({
               Math.min(anchorMaxDuration, originalDuration + deltaTime),
             );
             const endTime = originalStartTime + anchorNewDuration;
-            const snapResult = snapTime(endTime, snapTargetsRef.current, thresholdTime);
+            const snapResult = snapFrame(endTime, snapTargetsRef.current, thresholdTime);
             anchorNewDuration = Math.max(
               0.1,
-              Math.min(anchorMaxDuration, snapResult.time - originalStartTime),
+              Math.min(anchorMaxDuration, snapResult.frame - originalStartTime),
             );
             setSnapLines(snapResult.snapLines);
             const anchorDelta = anchorNewDuration - originalDuration;
@@ -1141,17 +1439,19 @@ export function TimelineStage({
               newStartTime = Math.max(0, originalStartTime + deltaTime);
             }
 
-            const snapResult = snapTime(newStartTime, snapTargetsRef.current, thresholdTime);
-            newStartTime = snapResult.time;
+            const snapResult = snapFrame(newStartTime, snapTargetsRef.current, thresholdTime);
+            newStartTime = snapResult.frame;
             setSnapLines(snapResult.snapLines);
 
             const newDuration = originalStartTime + originalDuration - newStartTime;
 
-            if (newDuration >= 0.1) {
+            if (newDuration >= 1) {
+              const newInPoint = originalInPoint + (newStartTime - originalStartTime) * speed;
               setTrimPreview({
                 clipId,
                 startTime: newStartTime,
                 duration: newDuration,
+                inPoint: newInPoint,
                 linkedClipId,
                 linkedTrackIndex,
               });
@@ -1162,12 +1462,12 @@ export function TimelineStage({
               maxDuration = (assetDuration - originalInPoint) / speed;
             }
 
-            let newDuration = Math.max(0.1, Math.min(maxDuration, originalDuration + deltaTime));
+            let newDuration = Math.max(1, Math.min(maxDuration, originalDuration + deltaTime));
 
             const endTime = originalStartTime + newDuration;
-            const snapResult = snapTime(endTime, snapTargetsRef.current, thresholdTime);
-            newDuration = snapResult.time - originalStartTime;
-            newDuration = Math.max(0.1, Math.min(maxDuration, newDuration));
+            const snapResult = snapFrame(endTime, snapTargetsRef.current, thresholdTime);
+            newDuration = snapResult.frame - originalStartTime;
+            newDuration = Math.max(1, Math.min(maxDuration, newDuration));
             setSnapLines(snapResult.snapLines);
 
             setTrimPreview({
@@ -1191,9 +1491,9 @@ export function TimelineStage({
 
         let newDuration: number;
         if (edge === "in") {
-          newDuration = Math.max(0.1, Math.min(clipDuration * 0.9, originalDuration + deltaTime));
+          newDuration = Math.max(1, Math.min(clipDuration * 0.9, originalDuration + deltaTime));
         } else {
-          newDuration = Math.max(0.1, Math.min(clipDuration * 0.9, originalDuration - deltaTime));
+          newDuration = Math.max(1, Math.min(clipDuration * 0.9, originalDuration - deltaTime));
         }
 
         setTransitionResizePreview({ clipId, edge, duration: newDuration });
@@ -1222,7 +1522,7 @@ export function TimelineStage({
         } else {
           durationDelta = deltaTime * 2;
         }
-        const newDuration = Math.max(0.1, Math.min(maxDuration, originalDuration + durationDelta));
+        const newDuration = Math.max(1, Math.min(maxDuration, originalDuration + durationDelta));
         const newHalf = newDuration / 2;
 
         // Project the overlap region: each side extends from boundary, clamped per-side
@@ -1285,23 +1585,23 @@ export function TimelineStage({
             const mcNewEnd = mcNewStart + mcClip.duration;
 
             // Check left edge snap
-            const leftSnap = snapTime(mcNewStart, snapTargetsRef.current, thresholdTime);
+            const leftSnap = snapFrame(mcNewStart, snapTargetsRef.current, thresholdTime);
             if (leftSnap.snapLines.length > 0) {
-              const dist = Math.abs(leftSnap.time - mcNewStart);
+              const dist = Math.abs(leftSnap.frame - mcNewStart);
               if (dist < bestSnapDist) {
                 bestSnapDist = dist;
-                bestSnapDelta = deltaTime + (leftSnap.time - mcNewStart);
+                bestSnapDelta = deltaTime + (leftSnap.frame - mcNewStart);
                 bestSnapLines = leftSnap.snapLines;
               }
             }
 
             // Check right edge snap
-            const rightSnap = snapTime(mcNewEnd, snapTargetsRef.current, thresholdTime);
+            const rightSnap = snapFrame(mcNewEnd, snapTargetsRef.current, thresholdTime);
             if (rightSnap.snapLines.length > 0) {
-              const dist = Math.abs(rightSnap.time - mcNewEnd);
+              const dist = Math.abs(rightSnap.frame - mcNewEnd);
               if (dist < bestSnapDist) {
                 bestSnapDist = dist;
-                bestSnapDelta = deltaTime + (rightSnap.time - mcNewEnd);
+                bestSnapDelta = deltaTime + (rightSnap.frame - mcNewEnd);
                 bestSnapLines = rightSnap.snapLines;
               }
             }
@@ -1332,7 +1632,7 @@ export function TimelineStage({
             const mcNewStart = mc.originalStartTime + bestSnapDelta;
             multiPreviews.push({
               clipId: mc.clipId,
-              x: timeToX(mcNewStart),
+              x: frameToX(mcNewStart),
               y: trackIndexToY(mc.originalTrackIndex) + CLIP_PADDING,
               trackIndex: mc.originalTrackIndex,
             });
@@ -1345,7 +1645,7 @@ export function TimelineStage({
             ) {
               multiPreviews.push({
                 clipId: mc.linkedClipId,
-                x: timeToX(mcNewStart),
+                x: frameToX(mcNewStart),
                 y: trackIndexToY(mc.linkedOriginalTrackIndex) + CLIP_PADDING,
                 trackIndex: mc.linkedOriginalTrackIndex,
               });
@@ -1356,7 +1656,7 @@ export function TimelineStage({
           const anchorNewStart = originalStartTime + bestSnapDelta;
           setDragPreview({
             clipId,
-            x: timeToX(anchorNewStart),
+            x: frameToX(anchorNewStart),
             y: trackIndexToY(originalTrackIndex) + CLIP_PADDING,
             trackIndex: originalTrackIndex,
             isMulti: true,
@@ -1373,32 +1673,33 @@ export function TimelineStage({
 
           if (compatibleTrackIndices.length === 0) return;
 
-          const deltaY = pos.y - startMouseY;
-          const deltaTrackIndex = Math.round(deltaY / TRACK_HEIGHT);
+          // Use absolute mouse position to find target track (supports variable heights)
+          const rawTargetIndex = yToTrackIndex(pos.y);
+          const deltaTrackIndex = rawTargetIndex >= 0 ? rawTargetIndex - originalTrackIndex : 0;
 
           let newStartTime = Math.max(0, originalStartTime + deltaTime);
 
-          const leftSnap = snapTime(newStartTime, snapTargetsRef.current, thresholdTime);
+          const leftSnap = snapFrame(newStartTime, snapTargetsRef.current, thresholdTime);
           const rightEdge = newStartTime + clip.duration;
-          const rightSnap = snapTime(rightEdge, snapTargetsRef.current, thresholdTime);
+          const rightSnap = snapFrame(rightEdge, snapTargetsRef.current, thresholdTime);
 
-          const leftDist = Math.abs(leftSnap.time - newStartTime);
-          const rightDist = Math.abs(rightSnap.time - rightEdge);
+          const leftDist = Math.abs(leftSnap.frame - newStartTime);
+          const rightDist = Math.abs(rightSnap.frame - rightEdge);
 
           if (leftSnap.snapLines.length > 0 || rightSnap.snapLines.length > 0) {
             if (leftSnap.snapLines.length > 0 && rightSnap.snapLines.length > 0) {
               if (leftDist <= rightDist) {
-                newStartTime = leftSnap.time;
+                newStartTime = leftSnap.frame;
                 setSnapLines(leftSnap.snapLines);
               } else {
-                newStartTime = rightSnap.time - clip.duration;
+                newStartTime = rightSnap.frame - clip.duration;
                 setSnapLines(rightSnap.snapLines);
               }
             } else if (leftSnap.snapLines.length > 0) {
-              newStartTime = leftSnap.time;
+              newStartTime = leftSnap.frame;
               setSnapLines(leftSnap.snapLines);
             } else {
-              newStartTime = rightSnap.time - clip.duration;
+              newStartTime = rightSnap.frame - clip.duration;
               setSnapLines(rightSnap.snapLines);
             }
           } else {
@@ -1407,19 +1708,19 @@ export function TimelineStage({
 
           newStartTime = Math.max(0, newStartTime);
 
-          const rawTargetIndex = originalTrackIndex + deltaTrackIndex;
+          const effectiveTargetIndex = originalTrackIndex + deltaTrackIndex;
           let newTrackIndex = compatibleTrackIndices[0];
-          let minDistance = Math.abs(rawTargetIndex - newTrackIndex);
+          let minDistance = Math.abs(effectiveTargetIndex - newTrackIndex);
 
           for (const idx of compatibleTrackIndices) {
-            const distance = Math.abs(rawTargetIndex - idx);
+            const distance = Math.abs(effectiveTargetIndex - idx);
             if (distance < minDistance) {
               minDistance = distance;
               newTrackIndex = idx;
             }
           }
 
-          const newX = timeToX(newStartTime);
+          const newX = frameToX(newStartTime);
           const newY = trackIndexToY(newTrackIndex) + CLIP_PADDING;
 
           let linkedX: number | undefined;
@@ -1433,7 +1734,8 @@ export function TimelineStage({
               .filter((i) => i !== -1);
 
             if (linkedCompatibleTrackIndices.length > 0) {
-              const linkedRawTargetIndex = linkedOriginalTrackIndex + deltaTrackIndex;
+              // Video is sorted descending, audio ascending — invert delta for linked track
+              const linkedRawTargetIndex = linkedOriginalTrackIndex - deltaTrackIndex;
               linkedTrackIndex = linkedCompatibleTrackIndices[0];
               let linkedMinDistance = Math.abs(linkedRawTargetIndex - linkedTrackIndex);
 
@@ -1445,7 +1747,7 @@ export function TimelineStage({
                 }
               }
 
-              linkedX = timeToX(newStartTime);
+              linkedX = frameToX(newStartTime);
               linkedY = trackIndexToY(linkedTrackIndex) + CLIP_PADDING;
             }
           }
@@ -1484,10 +1786,10 @@ export function TimelineStage({
           for (const clip of clips) {
             const trackIndex = allTracks.findIndex((t) => t.fullId === clip.trackId);
             if (trackIndex === -1) continue;
-            const cx = timeToX(clip.startTime);
+            const cx = frameToX(clip.startTime);
             const cy = trackIndexToY(trackIndex) + CLIP_PADDING;
             const cw = clip.duration * zoom;
-            const ch = TRACK_HEIGHT - CLIP_PADDING * 2;
+            const ch = getTrackHeight(trackIndex) - CLIP_PADDING * 2;
             // AABB intersection
             if (
               cx + cw > rect.x &&
@@ -1538,10 +1840,10 @@ export function TimelineStage({
               setRazorPreview({
                 x: pos.x,
                 trackY: trackY + CLIP_PADDING,
-                trackHeight: TRACK_HEIGHT - CLIP_PADDING * 2,
+                trackHeight: getTrackHeight(trackIndex) - CLIP_PADDING * 2,
               });
             } else {
-              const clipX = timeToX(clip.startTime);
+              const clipX = frameToX(clip.startTime);
               const clipWidth = clip.duration * zoom;
 
               // Check transition resize handles first
@@ -1580,6 +1882,28 @@ export function TimelineStage({
             setRazorPreview(null);
           }
         } // close cross transition else
+      } else if (pos.x < TRACK_HEADER_WIDTH && pos.y > RULER_HEIGHT) {
+        // Check for track resize hover — video: top edge, audio: bottom edge
+        const RESIZE_ZONE = 6;
+        const numVideo = splitLayout.videoTrackCount;
+        let isResizeHover = false;
+        for (let i = 0; i < allTracks.length; i++) {
+          const isVideo = i < numVideo;
+          const trackY = trackIndexToY(i);
+          const edgeY = isVideo ? trackY : trackY + getTrackHeight(i);
+          if (Math.abs(pos.y - edgeY) <= RESIZE_ZONE) {
+            setCursor("ns-resize");
+            isResizeHover = true;
+            break;
+          }
+        }
+        if (!isResizeHover) {
+          setCursor("default");
+        }
+        setTrimHover(null);
+        setTransitionHover(null);
+        setCrossTransitionHover(null);
+        setRazorPreview(null);
       } else {
         setCursor("default");
         setTrimHover(null);
@@ -1591,8 +1915,8 @@ export function TimelineStage({
     [
       duration,
       zoom,
-      xToTime,
-      timeToX,
+      xToFrame,
+      frameToX,
       trackIndexToY,
       allTracks,
       clips,
@@ -1605,11 +1929,23 @@ export function TimelineStage({
       setSelectedClipIds,
       setScrollX,
       setScrollY,
+      setCrossTransitionResizePreview,
+      yToTrackIndex,
+      setTrackHeight,
+      getTrackHeight,
+      splitLayout.videoTrackCount,
     ],
   );
 
   // Handle mouse up
   const handleStageMouseUp = useCallback(() => {
+    // End track height resize
+    if (trackResizeRef.current) {
+      trackResizeRef.current = null;
+      setCursor("default");
+      return;
+    }
+
     // End middle mouse panning
     if (middlePanRef.current) {
       middlePanRef.current = null;
@@ -1698,14 +2034,14 @@ export function TimelineStage({
             .filter((mc) => selectedIds.has(mc.clipId))
             .map((mc) => ({
               clipId: mc.clipId,
-              newStartTime: xToTime(mc.x),
+              newStartTime: xToFrame(mc.x),
             }));
           batchMoveClips(moves);
         } else {
           // Single-clip drag
           const { clipId } = dragState;
           const newTrack = allTracks[dragPreview.trackIndex];
-          const newStartTime = xToTime(dragPreview.x);
+          const newStartTime = xToFrame(dragPreview.x);
 
           if (newTrack) {
             moveClipTimeAndTrack(clipId, newStartTime, newTrack.fullId);
@@ -1728,7 +2064,7 @@ export function TimelineStage({
     transitionResizePreview,
     allTracks,
     clips,
-    xToTime,
+    xToFrame,
     moveClipTimeAndTrack,
     batchMoveClips,
     trimLeft,
@@ -1738,6 +2074,7 @@ export function TimelineStage({
     setClipTransitionOut,
     updateCrossTransitionDuration,
     setSelectedClipIds,
+    setCrossTransitionResizePreview,
   ]);
 
   // Get clip color based on type
@@ -1759,354 +2096,146 @@ export function TimelineStage({
     }
   }, []);
 
-  // Playhead X position
-  const playheadX = timeToX(currentTime);
-
-  // Render a clip
-  const renderClip = useCallback(
+  // Build props for a ClipNode given a clip and track index
+  const buildClipNodeProps = useCallback(
     (
-      clip: {
-        id: string;
-        type: string;
-        startTime: number;
-        duration: number;
-        name?: string;
-        assetId?: string;
-        inPoint: number;
-        speed: number;
-        assetDuration?: number;
-        text?: string;
-        shape?: string;
-        transitionIn?: { type: string; duration: number };
-        transitionOut?: { type: string; duration: number };
-      },
+      clip: (typeof clips)[0],
       trackIndex: number,
-      isGhost = false,
-      overrideX?: number,
-      overrideY?: number,
-      isLocked = false,
-      clipThumbnails?: ClipThumbnailData[],
-      clipWaveformMap?: Map<string, WaveformData>,
-    ) => {
-      const x = overrideX ?? timeToX(clip.startTime);
-      const y = overrideY ?? trackIndexToY(trackIndex) + CLIP_PADDING;
-      const clipWidth = clip.duration * zoom;
-      const clipHeight = TRACK_HEIGHT - CLIP_PADDING * 2;
+      opts?: {
+        isGhost?: boolean;
+        overrideStartTime?: number;
+        overrideDuration?: number;
+        overrideInPoint?: number;
+        overrideTrackIndex?: number;
+      },
+    ): ClipNodeProps | null => {
+      const effectiveStartTime = opts?.overrideStartTime ?? clip.startTime;
+      const effectiveDuration = opts?.overrideDuration ?? clip.duration;
+      const effectiveInPoint = opts?.overrideInPoint ?? clip.inPoint;
+      const effectiveTrackIndex = opts?.overrideTrackIndex ?? trackIndex;
+      const isGhost = opts?.isGhost ?? false;
 
-      // Skip if not visible
-      if (x + clipWidth < TRACK_HEADER_WIDTH || x > width) return null;
-      if (y + clipHeight < RULER_HEIGHT || y > height) return null;
+      // Content-space position within the track's section
+      const trackH = getTrackHeight(effectiveTrackIndex);
+      const numVideo = splitLayout.videoTrackCount;
+      const isVideoTrack = effectiveTrackIndex < numVideo;
+      const sectionIdx = isVideoTrack ? effectiveTrackIndex : effectiveTrackIndex - numVideo;
+      const sectionLayout = isVideoTrack ? splitLayout.video : splitLayout.audio;
+      const x = effectiveStartTime * zoom;
+      const y = (sectionLayout.trackYOffsets[sectionIdx] ?? 0) + CLIP_PADDING;
+      const clipWidth = effectiveDuration * zoom;
+
+      // Visibility culling (screen-space check)
+      const sectionTop = isVideoTrack ? videoSectionTop : audioSectionTop;
+      const baseY = isVideoTrack ? videoBaseY : audioBaseY;
+      const screenX = x + TRACK_HEADER_WIDTH - scrollX;
+      const screenY = y + baseY;
+      if (screenX + clipWidth < TRACK_HEADER_WIDTH || screenX > width) return null;
+      if (screenY + trackH < sectionTop || screenY > sectionTop + sectionHeight) return null;
 
       const isSelected = selectedClipIds.includes(clip.id);
-      const linkedClip = clips.find((c) => c.linkedClipId === clip.id);
       const hasLinkedClip =
-        linkedClip !== undefined || clips.find((c) => c.id === clip.id)?.linkedClipId !== undefined;
+        clips.some((c) => c.linkedClipId === clip.id) || clip.linkedClipId !== undefined;
 
-      // Determine opacity based on state
-      const baseOpacity = isGhost ? 0.5 : isLocked ? 0.5 : 1;
-
-      // Get thumbnails for this clip (video and image clips)
       const thumbnails =
-        (clip.type === "video" || clip.type === "image") && clipThumbnails
-          ? getThumbnailsForClip(clipThumbnails, clip.id)
+        (clip.type === "video" || clip.type === "image") && thumbnailData
+          ? getThumbnailsForClip(thumbnailData, clip.id)
           : [];
 
-      return (
-        <Group key={clip.id + (isGhost ? "-ghost" : "")}>
-          {/* Clip background */}
-          <Rect
-            x={x}
-            y={y}
-            width={clipWidth}
-            height={clipHeight}
-            fill={getClipColor(clip.type, isGhost)}
-            cornerRadius={4}
-            stroke={isSelected && !isGhost ? COLORS.clipSelected : COLORS.clipBorder}
-            strokeWidth={isSelected && !isGhost ? 2 : 1}
-            opacity={baseOpacity}
-          />
+      const clipAssetId = "assetId" in clip ? clip.assetId : undefined;
+      const wf = clip.type === "audio" && clipAssetId ? waveformMap.get(clipAssetId) : undefined;
 
-          {/* Video thumbnails */}
-          {thumbnails.length > 0 && !isGhost && (
-            <Group
-              clipFunc={(ctx) => {
-                // Clip to the rounded rect area (with small padding)
-                ctx.beginPath();
-                const padding = 2;
-                const radius = 4;
-                const cx = x + padding;
-                const cy = y + padding;
-                const cw = clipWidth - padding * 2;
-                const ch = clipHeight - padding * 2;
-                ctx.moveTo(cx + radius, cy);
-                ctx.lineTo(cx + cw - radius, cy);
-                ctx.arcTo(cx + cw, cy, cx + cw, cy + radius, radius);
-                ctx.lineTo(cx + cw, cy + ch - radius);
-                ctx.arcTo(cx + cw, cy + ch, cx + cw - radius, cy + ch, radius);
-                ctx.lineTo(cx + radius, cy + ch);
-                ctx.arcTo(cx, cy + ch, cx, cy + ch - radius, radius);
-                ctx.lineTo(cx, cy + radius);
-                ctx.arcTo(cx, cy, cx + radius, cy, radius);
-                ctx.closePath();
-              }}
-            >
-              {thumbnails.map((thumb) => {
-                if (!thumb.image) return null;
-                // Calculate slot width and scale thumbnail to fit height
-                const slotWidth = clipWidth / thumbnails.length;
-                const thumbAspect = thumb.image.width / thumb.image.height;
-                const thumbHeight = clipHeight - 4;
-                const thumbWidth = thumbHeight * thumbAspect;
-                // Position relative to clip's current x (not stale thumb.x from hook)
-                const slotX = x + thumb.slotIndex * slotWidth;
-                const thumbX = slotX + (slotWidth - thumbWidth) / 2;
-                return (
-                  <KonvaImage
-                    key={thumb.key}
-                    image={thumb.image}
-                    x={thumbX}
-                    y={y + 2}
-                    width={thumbWidth}
-                    height={thumbHeight}
-                    opacity={baseOpacity * 0.9}
-                    listening={false}
-                  />
-                );
-              })}
-            </Group>
-          )}
+      // transitionIn/transitionOut only exist on VisualClipBase descendants (not AudioClip)
+      const clipTransitionIn = "transitionIn" in clip ? clip.transitionIn : undefined;
+      const clipTransitionOut = "transitionOut" in clip ? clip.transitionOut : undefined;
 
-          {/* Audio waveform */}
-          {clip.type === "audio" &&
-            clip.assetId &&
-            !isGhost &&
-            (() => {
-              const wf = clipWaveformMap?.get(clip.assetId);
-              if (!wf) return null;
-              const outPoint = clip.inPoint + clip.duration * clip.speed;
-              return (
-                <Group
-                  clipFunc={(ctx) => {
-                    ctx.beginPath();
-                    const padding = 2;
-                    const radius = 4;
-                    const cx = x + padding;
-                    const cy = y + padding;
-                    const cw = clipWidth - padding * 2;
-                    const ch = clipHeight - padding * 2;
-                    ctx.moveTo(cx + radius, cy);
-                    ctx.lineTo(cx + cw - radius, cy);
-                    ctx.arcTo(cx + cw, cy, cx + cw, cy + radius, radius);
-                    ctx.lineTo(cx + cw, cy + ch - radius);
-                    ctx.arcTo(cx + cw, cy + ch, cx + cw - radius, cy + ch, radius);
-                    ctx.lineTo(cx + radius, cy + ch);
-                    ctx.arcTo(cx, cy + ch, cx, cy + ch - radius, radius);
-                    ctx.lineTo(cx, cy + radius);
-                    ctx.arcTo(cx, cy, cx + radius, cy, radius);
-                    ctx.closePath();
-                  }}
-                >
-                  <WaveformDisplay
-                    x={x}
-                    y={y}
-                    width={clipWidth}
-                    height={clipHeight}
-                    waveformData={wf.data}
-                    inPoint={clip.inPoint}
-                    outPoint={outPoint}
-                    duration={wf.duration}
-                  />
-                </Group>
-              );
-            })()}
+      // Resolve transition durations (with resize preview overrides)
+      let transitionInDuration = clipTransitionIn?.duration;
+      let transitionOutDuration = clipTransitionOut?.duration;
+      if (transitionResizePreview?.clipId === clip.id) {
+        if (transitionResizePreview.edge === "in")
+          transitionInDuration = transitionResizePreview.duration;
+        if (transitionResizePreview.edge === "out")
+          transitionOutDuration = transitionResizePreview.duration;
+      }
 
-          {/* Lock indicator for locked clips */}
-          {isLocked && !isGhost && (
-            <Text x={x + clipWidth - 20} y={y + 6} text="🔒" fontSize={10} opacity={0.8} />
-          )}
+      // Viewport bounds in content-space for internal culling of thumbnails/waveform
+      const viewportLeft = scrollX - TRACK_HEADER_WIDTH;
+      const viewportRight = viewportLeft + width;
 
-          {/* Linked clip indicator */}
-          {hasLinkedClip && !isGhost && (
-            <Rect
-              x={x + 2}
-              y={y + clipHeight - 6}
-              width={6}
-              height={4}
-              fill="#ffffff"
-              cornerRadius={1}
-              opacity={0.7}
-            />
-          )}
-
-          {/* Transition In overlay */}
-          {!isGhost &&
-            (() => {
-              const tIn =
-                transitionResizePreview?.clipId === clip.id &&
-                transitionResizePreview?.edge === "in"
-                  ? { duration: transitionResizePreview.duration }
-                  : clip.transitionIn;
-              if (!tIn || tIn.duration <= 0) return null;
-              const overlayWidth = tIn.duration * zoom;
-              const isHovered =
-                transitionHover?.clipId === clip.id && transitionHover?.edge === "in";
-              const isSelected =
-                selectedTransition?.clipId === clip.id && selectedTransition?.edge === "in";
-              return (
-                <>
-                  <Rect
-                    x={x}
-                    y={y}
-                    width={Math.min(overlayWidth, clipWidth)}
-                    height={clipHeight}
-                    fill={COLORS.transitionOverlay}
-                    cornerRadius={[4, 0, 0, 4]}
-                    stroke={isSelected ? "#ffffff" : undefined}
-                    strokeWidth={isSelected ? 2 : 0}
-                    listening={false}
-                  />
-                  {/* Inner edge handle line */}
-                  {(isHovered || transitionResizeRef.current?.clipId === clip.id) && (
-                    <Rect
-                      x={x + overlayWidth - 1}
-                      y={y + 4}
-                      width={2}
-                      height={clipHeight - 8}
-                      fill={COLORS.transitionHandle}
-                      opacity={0.8}
-                      listening={false}
-                    />
-                  )}
-                </>
-              );
-            })()}
-
-          {/* Transition Out overlay */}
-          {!isGhost &&
-            (() => {
-              const tOut =
-                transitionResizePreview?.clipId === clip.id &&
-                transitionResizePreview?.edge === "out"
-                  ? { duration: transitionResizePreview.duration }
-                  : clip.transitionOut;
-              if (!tOut || tOut.duration <= 0) return null;
-              const overlayWidth = tOut.duration * zoom;
-              const isHovered =
-                transitionHover?.clipId === clip.id && transitionHover?.edge === "out";
-              const isSelected =
-                selectedTransition?.clipId === clip.id && selectedTransition?.edge === "out";
-              return (
-                <>
-                  <Rect
-                    x={x + clipWidth - Math.min(overlayWidth, clipWidth)}
-                    y={y}
-                    width={Math.min(overlayWidth, clipWidth)}
-                    height={clipHeight}
-                    fill={COLORS.transitionOverlay}
-                    cornerRadius={[0, 4, 4, 0]}
-                    stroke={isSelected ? "#ffffff" : undefined}
-                    strokeWidth={isSelected ? 2 : 0}
-                    listening={false}
-                  />
-                  {/* Inner edge handle line */}
-                  {(isHovered || transitionResizeRef.current?.clipId === clip.id) && (
-                    <Rect
-                      x={x + clipWidth - overlayWidth - 1}
-                      y={y + 4}
-                      width={2}
-                      height={clipHeight - 8}
-                      fill={COLORS.transitionHandle}
-                      opacity={0.8}
-                      listening={false}
-                    />
-                  )}
-                </>
-              );
-            })()}
-
-          {/* Left trim handle - visible on hover */}
-          {!isGhost && (
-            <>
-              <Rect x={x} y={y} width={TRIM_HANDLE_WIDTH} height={clipHeight} fill="transparent" />
-              {/* Left handle visual indicator */}
-              {(trimHover?.clipId === clip.id && trimHover?.edge === "left") ||
-              (trimPreview?.clipId === clip.id && trimStateRef.current?.edge === "left") ? (
-                <Rect
-                  x={x}
-                  y={y + 8}
-                  width={4}
-                  height={clipHeight - 16}
-                  fill="#ffffff"
-                  cornerRadius={2}
-                  opacity={0.9}
-                />
-              ) : null}
-            </>
-          )}
-
-          {/* Right trim handle - visible on hover */}
-          {!isGhost && (
-            <>
-              <Rect
-                x={x + clipWidth - TRIM_HANDLE_WIDTH}
-                y={y}
-                width={TRIM_HANDLE_WIDTH}
-                height={clipHeight}
-                fill="transparent"
-              />
-              {/* Right handle visual indicator */}
-              {(trimHover?.clipId === clip.id && trimHover?.edge === "right") ||
-              (trimPreview?.clipId === clip.id && trimStateRef.current?.edge === "right") ? (
-                <Rect
-                  x={x + clipWidth - 4}
-                  y={y + 8}
-                  width={4}
-                  height={clipHeight - 16}
-                  fill="#ffffff"
-                  cornerRadius={2}
-                  opacity={0.9}
-                />
-              ) : null}
-            </>
-          )}
-
-          {/* Clip label */}
-          <Label x={x + 8} y={y + 8}>
-            <Tag fill="rgba(0,0,0,0.6)" cornerRadius={2} />
-            <Text
-              padding={4}
-              text={
-                clip.type === "text" && clip.text
-                  ? clip.text
-                  : clip.type === "shape" && clip.shape
-                    ? clip.shape
-                    : clip.name || clip.type
-              }
-              fontSize={11}
-              fill="#ffffff"
-              ellipsis
-              listening={false}
-              height={20}
-              fontFamily="Consolas, 'Courier New', monospace"
-            />
-          </Label>
-        </Group>
-      );
+      return {
+        clipId: clip.id,
+        clipType: clip.type,
+        startTime: effectiveStartTime,
+        duration: effectiveDuration,
+        inPoint: effectiveInPoint,
+        speed: clip.speed ?? 1,
+        name: clip.name,
+        assetId: clipAssetId,
+        text: clip.type === "text" ? (clip as any).text : undefined,
+        shape: clip.type === "shape" ? (clip as any).shape : undefined,
+        transitionIn: clipTransitionIn,
+        transitionOut: clipTransitionOut,
+        x,
+        y,
+        clipWidth,
+        clipHeight: trackH - CLIP_PADDING * 2,
+        viewportLeft,
+        viewportRight,
+        isSelected,
+        isGhost,
+        isLocked: allTracks[effectiveTrackIndex]?.locked ?? false,
+        hasLinkedClip,
+        clipColor: getClipColor(clip.type, isGhost),
+        trimHoverEdge: trimHover?.clipId === clip.id ? trimHover.edge : null,
+        isTrimming: trimPreview?.clipId === clip.id,
+        trimEdge:
+          trimPreview?.clipId === clip.id && trimStateRef.current
+            ? trimStateRef.current.edge
+            : null,
+        transitionInDuration,
+        transitionOutDuration,
+        isTransitionInHovered:
+          transitionHover?.clipId === clip.id && transitionHover?.edge === "in",
+        isTransitionOutHovered:
+          transitionHover?.clipId === clip.id && transitionHover?.edge === "out",
+        isTransitionInSelected:
+          selectedTransition?.clipId === clip.id && selectedTransition?.edge === "in",
+        isTransitionOutSelected:
+          selectedTransition?.clipId === clip.id && selectedTransition?.edge === "out",
+        isTransitionResizing: transitionResizeRef.current?.clipId === clip.id,
+        thumbnails,
+        waveformData: wf?.data,
+        waveformDuration: wf?.duration,
+        isZooming,
+        zoom,
+        fps,
+      };
     },
     [
-      timeToX,
-      trackIndexToY,
-      zoom,
-      width,
-      height,
-      selectedClipIds,
       clips,
-      getClipColor,
+      selectedClipIds,
       trimHover,
       trimPreview,
       transitionResizePreview,
       transitionHover,
       selectedTransition,
+      thumbnailData,
+      waveformMap,
+      zoom,
+      width,
+      scrollX,
+      allTracks,
+      getClipColor,
+      isZooming,
+      fps,
+      splitLayout,
+      videoBaseY,
+      audioBaseY,
+      videoSectionTop,
+      audioSectionTop,
+      sectionHeight,
+      getTrackHeight,
     ],
   );
 
@@ -2122,305 +2251,98 @@ export function TimelineStage({
       onMouseUp={handleStageMouseUp}
       onMouseLeave={handleStageMouseUp}
     >
-      <Layer>
+      <Layer perfectDrawEnabled={false}>
         {/* Background */}
         <Rect x={0} y={0} width={width} height={height} fill={COLORS.background} />
 
         {/* Track backgrounds */}
-        {allTracks.map((track, index) => {
-          const y = trackIndexToY(index);
-          if (y + TRACK_HEIGHT < RULER_HEIGHT || y > height) return null;
-
-          return (
-            <Rect
-              key={track.fullId}
-              x={TRACK_HEADER_WIDTH}
-              y={Math.max(y, RULER_HEIGHT)}
-              width={width - TRACK_HEADER_WIDTH}
-              height={Math.min(
-                TRACK_HEIGHT,
-                y < RULER_HEIGHT ? TRACK_HEIGHT - (RULER_HEIGHT - y) : TRACK_HEIGHT,
-              )}
-              fill={index % 2 === 0 ? COLORS.trackBackground : COLORS.trackBackgroundAlt}
-            />
-          );
-        })}
+        <TrackBackgrounds
+          tracks={allTracks}
+          trackIndexToY={trackIndexToY}
+          splitLayout={splitLayout}
+          width={width}
+          videoSectionTop={videoSectionTop}
+          audioSectionTop={audioSectionTop}
+          sectionHeight={sectionHeight}
+        />
 
         {/* Grid lines in track area */}
-        {gridLines.map((line, i) => (
-          <Line
-            key={i}
-            points={[line.x, RULER_HEIGHT, line.x, height]}
-            stroke={line.isMajor ? COLORS.rulerMajorLine : COLORS.rulerMinorLine}
-            strokeWidth={1}
-          />
-        ))}
+        <GridLinesTrackArea gridLines={gridLines} height={height} />
 
-        {/* Clips */}
-        {clips.map((clip) => {
-          const trackIndex = allTracks.findIndex((t) => t.fullId === clip.trackId);
-          if (trackIndex === -1) return null;
-
-          const track = allTracks[trackIndex];
-          const isLocked = track?.locked ?? false;
-
-          // Multi-clip drag: all clips in multiClips are ghosts at original positions
-          if (dragPreview?.isMulti && dragPreview.multiClips) {
-            if (dragPreview.multiClips.some((mc) => mc.clipId === clip.id)) {
-              return renderClip(clip, trackIndex, true);
-            }
-          } else if (dragPreview) {
-            // Single-clip drag: ghost the dragged clip and its linked clip
-            if (dragPreview.clipId === clip.id) {
-              return renderClip(clip, trackIndex, true);
-            }
-            if (dragPreview.linkedClipId === clip.id) {
-              return renderClip(clip, trackIndex, true);
-            }
-          }
-
-          // Multi-clip trim: use preview values for all clips in multiClips
-          if (trimPreview?.isMulti && trimPreview.multiClips) {
-            const mc = trimPreview.multiClips.find((m) => m.clipId === clip.id);
-            if (mc) {
-              return renderClip(
-                { ...clip, startTime: mc.startTime, duration: mc.duration },
-                mc.trackIndex >= 0 ? mc.trackIndex : trackIndex,
-                false,
-                undefined,
-                undefined,
-                isLocked,
-                thumbnailData,
-                waveformMap,
-              );
-            }
-            // Linked clips of multi-trimmed clips
-            const linkedMc = trimPreview.multiClips.find((m) => m.linkedClipId === clip.id);
-            if (linkedMc && linkedMc.linkedTrackIndex !== undefined) {
-              const linkedTrack = allTracks[linkedMc.linkedTrackIndex];
-              const linkedIsLocked = linkedTrack?.locked ?? false;
-              return renderClip(
-                { ...clip, startTime: linkedMc.startTime, duration: linkedMc.duration },
-                linkedMc.linkedTrackIndex,
-                false,
-                undefined,
-                undefined,
-                linkedIsLocked,
-                thumbnailData,
-                waveformMap,
-              );
-            }
-          } else if (trimPreview) {
-            // Single-clip trim
-            if (trimPreview.clipId === clip.id) {
-              return renderClip(
-                { ...clip, startTime: trimPreview.startTime, duration: trimPreview.duration },
-                trackIndex,
-                false,
-                undefined,
-                undefined,
-                isLocked,
-                thumbnailData,
-                waveformMap,
-              );
-            }
-            if (
-              trimPreview.linkedClipId === clip.id &&
-              trimPreview.linkedTrackIndex !== undefined
-            ) {
-              const linkedTrack = allTracks[trimPreview.linkedTrackIndex];
-              const linkedIsLocked = linkedTrack?.locked ?? false;
-              return renderClip(
-                { ...clip, startTime: trimPreview.startTime, duration: trimPreview.duration },
-                trimPreview.linkedTrackIndex,
-                false,
-                undefined,
-                undefined,
-                linkedIsLocked,
-                thumbnailData,
-                waveformMap,
-              );
-            }
-          }
-
-          return renderClip(
-            clip,
-            trackIndex,
-            false,
-            undefined,
-            undefined,
-            isLocked,
-            thumbnailData,
-            waveformMap,
-          );
-        })}
-
-        {/* Cross transition overlays */}
-        {crossTransitions.map((ct) => {
-          const outgoing = clips.find((c) => c.id === ct.outgoingClipId);
-          const incoming = clips.find((c) => c.id === ct.incomingClipId);
-          if (!outgoing || !incoming) return null;
-          const trackIndex = allTracks.findIndex((t) => t.fullId === outgoing.trackId);
-          if (trackIndex === -1) return null;
-
-          // Use actual clip overlap region for positioning.
-          // During resize preview, use the projected overlap from the preview state.
-          const isResizing = crossTransitionResizePreview?.transitionId === ct.id;
-          const overlapStart = isResizing
-            ? crossTransitionResizePreview.overlapStart
-            : incoming.startTime;
-          const overlapEnd = isResizing
-            ? crossTransitionResizePreview.overlapEnd
-            : outgoing.startTime + outgoing.duration;
-          const ctX = timeToX(overlapStart);
-          const ctWidth = (overlapEnd - overlapStart) * zoom;
-          const ctY = trackIndexToY(trackIndex) + CLIP_PADDING;
-          const ctHeight = TRACK_HEIGHT - CLIP_PADDING * 2;
-          const isSelected = selectedCrossTransition === ct.id;
-          const isHovered = crossTransitionHover === ct.id;
-
-          // Find linked audio track for the overlay
-          const outgoingLinkedId = outgoing.linkedClipId;
-          const audioTrackIndex =
-            outgoingLinkedId != null
-              ? (() => {
-                  const linkedClip = clips.find(
-                    (c) => c.id === outgoingLinkedId || c.linkedClipId === outgoing.id,
-                  );
-                  if (!linkedClip) return -1;
-                  return allTracks.findIndex((t) => t.fullId === linkedClip.trackId);
-                })()
-              : -1;
-
-          return (
-            <Group key={ct.id}>
-              {/* Video track overlay */}
-              <Rect
-                x={ctX}
-                y={ctY}
-                width={ctWidth}
-                height={ctHeight}
-                fill="rgba(168, 85, 247, 0.45)"
-                stroke={isSelected ? "#ffffff" : "rgba(168, 85, 247, 0.6)"}
-                strokeWidth={isSelected ? 2 : 1}
-                cornerRadius={4}
-                listening={false}
-              />
-              {/* Left resize handle */}
-              {(isHovered || isSelected) && (
-                <Rect
-                  x={ctX}
-                  y={ctY + 4}
-                  width={2}
-                  height={ctHeight - 8}
-                  fill="#fff"
-                  opacity={0.8}
-                  listening={false}
-                />
-              )}
-              {/* Right resize handle */}
-              {(isHovered || isSelected) && (
-                <Rect
-                  x={ctX + ctWidth - 2}
-                  y={ctY + 4}
-                  width={2}
-                  height={ctHeight - 8}
-                  fill="#fff"
-                  opacity={0.8}
-                  listening={false}
-                />
-              )}
-              {/* Audio track overlay (cross-fade) */}
-              {audioTrackIndex !== -1 && (
-                <Rect
-                  x={ctX}
-                  y={trackIndexToY(audioTrackIndex) + CLIP_PADDING}
-                  width={ctWidth}
-                  height={ctHeight}
-                  fill="rgba(168, 85, 247, 0.35)"
-                  stroke={isSelected ? "#ffffff" : "rgba(168, 85, 247, 0.4)"}
-                  strokeWidth={isSelected ? 2 : 1}
-                  cornerRadius={4}
-                  listening={false}
-                />
-              )}
-            </Group>
-          );
-        })}
-
-        {/* Drag preview (the moving clip(s)) */}
-        {dragPreview?.isMulti && dragPreview.multiClips
-          ? dragPreview.multiClips.map((mc) => {
-              const mcClip = clips.find((c) => c.id === mc.clipId);
-              if (!mcClip) return null;
-              const newStartTime = xToTime(mc.x);
-              return renderClip(
-                { ...mcClip, startTime: newStartTime },
-                mc.trackIndex,
-                false,
-                mc.x,
-                mc.y,
-                false,
-                thumbnailData,
-                waveformMap,
-              );
-            })
-          : dragPreview &&
-            (() => {
-              const clip = clips.find((c) => c.id === dragPreview.clipId);
-              if (!clip) return null;
-
-              const newStartTime = xToTime(dragPreview.x);
-              return renderClip(
-                { ...clip, startTime: newStartTime },
-                dragPreview.trackIndex,
-                false,
-                dragPreview.x,
-                dragPreview.y,
-                false,
-                thumbnailData,
-                waveformMap,
-              );
-            })()}
-
-        {/* Drag preview for linked clip (single-clip drag only) */}
-        {dragPreview &&
-          !dragPreview.isMulti &&
-          dragPreview.linkedClipId &&
-          dragPreview.linkedX !== undefined &&
-          dragPreview.linkedY !== undefined &&
-          dragPreview.linkedTrackIndex !== undefined &&
-          (() => {
-            const linkedClip = clips.find((c) => c.id === dragPreview.linkedClipId);
-            if (!linkedClip) return null;
-
-            const newStartTime = xToTime(dragPreview.linkedX);
-            return renderClip(
-              { ...linkedClip, startTime: newStartTime },
-              dragPreview.linkedTrackIndex,
-              false,
-              dragPreview.linkedX,
-              dragPreview.linkedY,
-              false,
-              thumbnailData,
-              waveformMap,
-            );
-          })()}
-
-        {/* Snap lines */}
-        {snapLines.map((snapTime) => {
-          const sx = timeToX(snapTime);
-          if (sx < TRACK_HEADER_WIDTH || sx > width) return null;
-          return (
-            <Line
-              key={`snap-${snapTime}`}
-              points={[sx, RULER_HEIGHT, sx, height]}
-              stroke={COLORS.snapLine}
-              strokeWidth={1}
-              dash={[4, 4]}
+        {/* Video section — clipped viewport */}
+        <Group
+          clipX={TRACK_HEADER_WIDTH}
+          clipY={videoSectionTop}
+          clipWidth={width - TRACK_HEADER_WIDTH}
+          clipHeight={sectionHeight}
+        >
+          <Group x={TRACK_HEADER_WIDTH - scrollX} y={videoBaseY} listening={false}>
+            <ClipRenderer
+              clips={clips}
+              allTracks={allTracks}
+              section="video"
+              dragPreview={dragPreview}
+              trimPreview={trimPreview}
+              buildClipNodeProps={buildClipNodeProps}
             />
-          );
-        })}
+          </Group>
+          <CrossTransitionOverlays
+            crossTransitions={crossTransitions}
+            clips={clips}
+            allTracks={allTracks}
+            frameToX={frameToX}
+            trackIndexToY={trackIndexToY}
+            getTrackHeight={getTrackHeight}
+            zoom={zoom}
+            crossTransitionHover={crossTransitionHover}
+            crossTransitionResizePreview={crossTransitionResizePreview}
+          />
+          <Group x={TRACK_HEADER_WIDTH - scrollX} y={videoBaseY} listening={false}>
+            <DragPreviewClips
+              clips={clips}
+              allTracks={allTracks}
+              section="video"
+              dragPreview={dragPreview}
+              buildClipNodeProps={buildClipNodeProps}
+              xToFrame={xToFrame}
+            />
+          </Group>
+        </Group>
+
+        {/* Audio section — clipped viewport */}
+        <Group
+          clipX={TRACK_HEADER_WIDTH}
+          clipY={audioSectionTop}
+          clipWidth={width - TRACK_HEADER_WIDTH}
+          clipHeight={sectionHeight}
+        >
+          <Group x={TRACK_HEADER_WIDTH - scrollX} y={audioBaseY} listening={false}>
+            <ClipRenderer
+              clips={clips}
+              allTracks={allTracks}
+              section="audio"
+              dragPreview={dragPreview}
+              trimPreview={trimPreview}
+              buildClipNodeProps={buildClipNodeProps}
+            />
+          </Group>
+          <Group x={TRACK_HEADER_WIDTH - scrollX} y={audioBaseY} listening={false}>
+            <DragPreviewClips
+              clips={clips}
+              allTracks={allTracks}
+              section="audio"
+              dragPreview={dragPreview}
+              buildClipNodeProps={buildClipNodeProps}
+              xToFrame={xToFrame}
+            />
+          </Group>
+        </Group>
+      </Layer>
+
+      {/* Second Layer — ruler, playhead, snap lines, selection, drops, headers */}
+      <Layer perfectDrawEnabled={false}>
+        {/* Snap lines */}
+        <SnapLines snapLines={snapLines} frameToX={frameToX} width={width} height={height} />
 
         {/* Marquee selection rectangle */}
         {marqueeRect && (
@@ -2454,9 +2376,9 @@ export function TimelineStage({
         {dropPreview && (
           <Rect
             x={dropPreview.x}
-            y={RULER_HEIGHT + dropPreview.trackIndex * TRACK_HEIGHT - scrollY + 4}
+            y={trackIndexToY(dropPreview.trackIndex) + 4}
             width={dropPreview.width}
-            height={TRACK_HEIGHT - 8}
+            height={getTrackHeight(dropPreview.trackIndex) - 8}
             fill={dropPreview.isValid ? "rgba(59, 130, 246, 0.2)" : "rgba(239, 68, 68, 0.2)"}
             stroke={dropPreview.isValid ? "#3b82f6" : "#ef4444"}
             strokeWidth={2}
@@ -2500,24 +2422,7 @@ export function TimelineStage({
         <Rect x={0} y={0} width={width} height={RULER_HEIGHT} fill={COLORS.ruler} />
 
         {/* Ruler time markers */}
-        {gridLines.map((line, i) => (
-          <Group key={i}>
-            <Line
-              points={[line.x, line.isMajor ? 20 : 30, line.x, RULER_HEIGHT]}
-              stroke={line.isMajor ? COLORS.rulerMajorLine : COLORS.rulerMinorLine}
-              strokeWidth={1}
-            />
-            {line.isMajor && (
-              <Text
-                x={line.x + 4}
-                y={8}
-                text={formatTime(line.time)}
-                fontSize={10}
-                fill={COLORS.rulerText}
-              />
-            )}
-          </Group>
-        ))}
+        <RulerMarkers gridLines={gridLines} fpsFloat={fpsFloat} />
 
         {/* Track headers background */}
         <Rect
@@ -2528,81 +2433,49 @@ export function TimelineStage({
           fill={COLORS.headerBackground}
         />
 
-        {/* Track headers */}
-        {allTracks.map((track, index) => {
-          const y = trackIndexToY(index);
-          if (y + TRACK_HEIGHT < RULER_HEIGHT || y > height) return null;
+        {/* Track headers — clipped per section */}
+        <Group
+          clipX={0}
+          clipY={videoSectionTop}
+          clipWidth={TRACK_HEADER_WIDTH}
+          clipHeight={sectionHeight}
+        >
+          <TrackHeaders
+            tracks={allTracks}
+            trackIndexToY={trackIndexToY}
+            splitLayout={splitLayout}
+            section="video"
+            sectionTop={videoSectionTop}
+            sectionHeight={sectionHeight}
+            onContextMenu={onTrackContextMenu ?? (() => {})}
+          />
+        </Group>
+        <Group
+          clipX={0}
+          clipY={audioSectionTop}
+          clipWidth={TRACK_HEADER_WIDTH}
+          clipHeight={sectionHeight}
+        >
+          <TrackHeaders
+            tracks={allTracks}
+            trackIndexToY={trackIndexToY}
+            splitLayout={splitLayout}
+            section="audio"
+            sectionTop={audioSectionTop}
+            sectionHeight={sectionHeight}
+            onContextMenu={onTrackContextMenu ?? (() => {})}
+          />
+        </Group>
 
-          const buttonSize = 24;
-          const buttonIconSize = 16;
-          const buttonY = y + TRACK_HEIGHT / 2 - buttonSize / 2;
-          const muteButtonX = TRACK_HEADER_WIDTH - buttonSize * 2 - 16;
-          const lockButtonX = TRACK_HEADER_WIDTH - buttonSize - 8;
-
-          const MuteIcon =
-            track.type === "video"
-              ? track.muted
-                ? KonvaEyeOffIcon
-                : KonvaEyeIcon
-              : track.muted
-                ? KonvaVolumeIcon
-                : KonvaVolume2Icon;
-
-          const LockIcon = track.locked ? KonvaLockIcon : KonvaLockOpenIcon;
-
-          return (
-            <Group key={track.fullId}>
-              <Rect
-                x={0}
-                y={y}
-                width={TRACK_HEADER_WIDTH}
-                height={TRACK_HEIGHT}
-                fill={COLORS.headerBackground}
-                stroke={COLORS.headerBorder}
-                strokeWidth={1}
-              />
-              <Text
-                x={12}
-                y={y + TRACK_HEIGHT / 2 - 6}
-                text={track.name}
-                fontSize={12}
-                fill={COLORS.headerText}
-              />
-
-              {/* Mute button */}
-              <Group
-                x={muteButtonX}
-                y={buttonY}
-                onClick={() => toggleTrackMuted(track.id)}
-                onTap={() => toggleTrackMuted(track.id)}
-              >
-                <Rect
-                  width={buttonSize}
-                  height={buttonSize}
-                  fill={track.muted ? "#ef4444" : "#374151"}
-                  cornerRadius={4}
-                />
-                <MuteIcon x={buttonSize / 2 - 8} y={buttonSize / 2 - 8} size={buttonIconSize} />
-              </Group>
-
-              {/* Lock button */}
-              <Group
-                x={lockButtonX}
-                y={buttonY}
-                onClick={() => toggleTrackLocked(track.id)}
-                onTap={() => toggleTrackLocked(track.id)}
-              >
-                <Rect
-                  width={buttonSize}
-                  height={buttonSize}
-                  fill={track.locked ? "#f59e0b" : "#374151"}
-                  cornerRadius={4}
-                />
-                <LockIcon x={buttonSize / 2 - 8} y={buttonSize / 2 - 8} size={buttonIconSize} />
-              </Group>
-            </Group>
-          );
-        })}
+        {/* Section divider line between video and audio */}
+        <Rect
+          x={0}
+          y={audioSectionTop - 1}
+          width={width}
+          height={2}
+          fill="#444444"
+          listening={false}
+        />
 
         {/* Corner piece (top-left) */}
         <Rect
@@ -2613,34 +2486,18 @@ export function TimelineStage({
           fill={COLORS.headerBackground}
         />
 
+        {/* Separator line below ruler/header */}
+        <Rect
+          x={0}
+          y={RULER_HEIGHT - 1}
+          width={width}
+          height={1}
+          fill="#444444"
+          listening={false}
+        />
+
         {/* Playhead */}
-        {playheadX >= TRACK_HEADER_WIDTH && playheadX <= width && (
-          <Group>
-            {/* Playhead head (triangle) */}
-            <Line
-              points={[
-                playheadX - 6,
-                0,
-                playheadX + 6,
-                0,
-                playheadX + 6,
-                10,
-                playheadX,
-                18,
-                playheadX - 6,
-                10,
-              ]}
-              closed
-              fill={COLORS.playhead}
-            />
-            {/* Playhead line */}
-            <Line
-              points={[playheadX, RULER_HEIGHT - 24, playheadX, height]}
-              stroke={COLORS.playheadLine}
-              strokeWidth={2}
-            />
-          </Group>
-        )}
+        <Playhead width={width} height={height} />
       </Layer>
     </Stage>
   );

@@ -1,7 +1,11 @@
+import type { Effects } from "@tooscut/render-engine";
+
+import { useMemo, useState } from "react";
+
+import { useVideoEditorStore } from "../../state/video-editor-store";
 import { NumericInput } from "../ui/numeric-input";
 import { KeyframeInput } from "./keyframe-input";
-import { PropertySection, PropertyRow } from "./property-shared";
-import type { Effects } from "@tooscut/render-engine";
+import { PropertySection, PropertyRow, LinkablePropertySection } from "./property-shared";
 
 interface PicturePropertiesProps {
   clipId: string;
@@ -32,6 +36,41 @@ export function PictureProperties({
   onEffectsChange,
   onSpeedChange,
 }: PicturePropertiesProps) {
+  const [scaleLinked, setScaleLinked] = useState(true);
+
+  // Compute fit-to-screen scale from the clip's asset dimensions
+  const clips = useVideoEditorStore((s) => s.clips);
+  const assets = useVideoEditorStore((s) => s.assets);
+  const settings = useVideoEditorStore((s) => s.settings);
+
+  const fitScale = useMemo(() => {
+    const clip = clips.find((c) => c.id === clipId);
+    if (!clip || (clip.type !== "video" && clip.type !== "image")) return 1;
+    const asset = assets.find((a) => a.id === clip.assetId);
+    if (!asset?.width || !asset?.height) return 1;
+    return Math.min(settings.width / asset.width, settings.height / asset.height);
+  }, [clipId, clips, assets, settings.width, settings.height]);
+
+  const handleScaleXChange = (value: number) => {
+    if (scaleLinked) {
+      const ratio = value / transform.scaleX;
+      onTransformChange("scaleX", value);
+      onTransformChange("scaleY", transform.scaleY * ratio);
+    } else {
+      onTransformChange("scaleX", value);
+    }
+  };
+
+  const handleScaleYChange = (value: number) => {
+    if (scaleLinked) {
+      const ratio = value / transform.scaleY;
+      onTransformChange("scaleY", value);
+      onTransformChange("scaleX", transform.scaleX * ratio);
+    } else {
+      onTransformChange("scaleY", value);
+    }
+  };
+
   return (
     <div className="space-y-4">
       <PropertySection title="Position">
@@ -63,21 +102,25 @@ export function PictureProperties({
         </PropertyRow>
       </PropertySection>
 
-      <PropertySection title="Scale">
+      <LinkablePropertySection title="Scale" linked={scaleLinked} onLinkedChange={setScaleLinked}>
         <PropertyRow label="X">
           <KeyframeInput
             clipId={clipId}
             clipStartTime={clipStartTime}
             property="scaleX"
             baseValue={transform.scaleX}
-            onChange={(v) => onTransformChange("scaleX", v)}
+            onChange={handleScaleXChange}
+            onReset={() => {
+              onTransformChange("scaleX", fitScale);
+              if (scaleLinked) onTransformChange("scaleY", fitScale);
+            }}
             suffix="%"
             precision={0}
             step={0.01}
             min={0.01}
             max={5}
             displayMultiplier={100}
-            defaultValue={1}
+            defaultValue={fitScale}
           />
         </PropertyRow>
         <PropertyRow label="Y">
@@ -86,17 +129,21 @@ export function PictureProperties({
             clipStartTime={clipStartTime}
             property="scaleY"
             baseValue={transform.scaleY}
-            onChange={(v) => onTransformChange("scaleY", v)}
+            onChange={handleScaleYChange}
+            onReset={() => {
+              onTransformChange("scaleY", fitScale);
+              if (scaleLinked) onTransformChange("scaleX", fitScale);
+            }}
             suffix="%"
             precision={0}
             step={0.01}
             min={0.01}
             max={5}
             displayMultiplier={100}
-            defaultValue={1}
+            defaultValue={fitScale}
           />
         </PropertyRow>
-      </PropertySection>
+      </LinkablePropertySection>
 
       <PropertySection title="Rotation">
         <PropertyRow label="Angle">
@@ -137,7 +184,11 @@ export function PictureProperties({
 
       {clipType === "video" && (
         <PropertySection title="Speed">
-          <PropertyRow label="Rate">
+          <PropertyRow
+            label="Rate"
+            isDirty={Math.abs(speed - 1) > 1e-6}
+            onReset={() => onSpeedChange(1)}
+          >
             <NumericInput
               value={speed}
               onChange={onSpeedChange}

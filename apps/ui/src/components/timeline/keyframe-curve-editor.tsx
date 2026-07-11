@@ -5,22 +5,24 @@
  * Supports cubic bezier handle editing for precise easing control.
  */
 
-import type React from "react";
+import type { AnyAnimatableProperty, CubicBezier } from "@tooscut/render-engine";
 import type Konva from "konva";
+import type React from "react";
+
+import { CUBIC_BEZIER_PRESETS, evaluateCubicBezier } from "@tooscut/render-engine";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Group, Layer, Line, Rect, Stage, Text, Circle } from "react-konva";
-import { ChevronDown, ChevronRight } from "lucide-react";
-import { useVideoEditorStore } from "../../state/video-editor-store";
-import type { AnimatableProperty, CubicBezier } from "@tooscut/render-engine";
-import { CUBIC_BEZIER_PRESETS, evaluateCubicBezier } from "@tooscut/render-engine";
+
 import { getKeyframesForProperty } from "../../lib/keyframe-utils";
+import { useVideoEditorStore } from "../../state/video-editor-store";
 import { TRACK_HEADER_WIDTH } from "./constants";
 
 interface KeyframeCurveEditorProps {
   width: number;
   clipId: string;
   /** Properties to show curves for */
-  properties: AnimatableProperty[];
+  properties: AnyAnimatableProperty[];
 }
 
 /** Height of each property graph */
@@ -43,7 +45,17 @@ interface PropertyConfig {
   format: (v: number) => string;
 }
 
-const PROPERTY_CONFIGS: Record<AnimatableProperty, PropertyConfig> = {
+/** Default config for unknown properties (e.g., color grading) */
+const DEFAULT_PROPERTY_CONFIG: PropertyConfig = {
+  label: "Unknown",
+  color: "#888888",
+  min: 0,
+  max: 1,
+  unit: "",
+  format: (v) => v.toFixed(2),
+};
+
+const PROPERTY_CONFIGS: Partial<Record<AnyAnimatableProperty, PropertyConfig>> = {
   x: {
     label: "Position X",
     color: "#ff6b6b",
@@ -255,7 +267,7 @@ const PROPERTY_CONFIGS: Record<AnimatableProperty, PropertyConfig> = {
 };
 
 interface PropertyGraphProps {
-  property: AnimatableProperty;
+  property: AnyAnimatableProperty;
   clipId: string;
   width: number;
   height: number;
@@ -293,7 +305,10 @@ function PropertyGraph({
   const updateKeyframe = useVideoEditorStore((s) => s.updateKeyframe);
 
   const clip = clips.find((c) => c.id === clipId);
-  const keyframes = clip ? getKeyframesForProperty(clip.keyframes, property) : [];
+  const keyframes = useMemo(
+    () => (clip ? getKeyframesForProperty(clip.keyframes, property) : []),
+    [clip, property],
+  );
 
   // Compute value range from keyframe values with 50% padding
   const [baseRange, setBaseRange] = useState({ min: config.min, max: config.max });
@@ -337,12 +352,12 @@ function PropertyGraph({
   const graphContentHeight = height - GRAPH_PADDING * 2;
 
   // Coordinate conversion
-  const timeToX = useCallback(
+  const frameToX = useCallback(
     (time: number) => TRACK_HEADER_WIDTH + (clipStartTime + time) * zoom - scrollX,
     [zoom, scrollX, clipStartTime],
   );
 
-  const xToTime = useCallback(
+  const xToFrame = useCallback(
     (x: number) => {
       const absoluteTime = (x - TRACK_HEADER_WIDTH + scrollX) / zoom;
       return absoluteTime - clipStartTime;
@@ -393,7 +408,7 @@ function PropertyGraph({
 
       if (type === "point") {
         // Drag keyframe point
-        const newTime = Math.max(0, xToTime(pos.x));
+        const newTime = Math.max(0, xToFrame(pos.x));
         const newValue = yToValue(pos.y);
         updateKeyframe(clipId, property, index, { time: newTime, value: newValue });
       } else {
@@ -401,9 +416,9 @@ function PropertyGraph({
         const nextKf = keyframes[index + 1];
         if (!nextKf) return;
 
-        const x1 = timeToX(kf.time);
+        const x1 = frameToX(kf.time);
         const y1 = valueToY(kf.value);
-        const x2 = timeToX(nextKf.time);
+        const x2 = frameToX(nextKf.time);
         const y2 = valueToY(nextKf.value);
         const dx = x2 - x1;
         const dy = y2 - y1;
@@ -447,10 +462,9 @@ function PropertyGraph({
       keyframes,
       clipId,
       property,
-      config,
-      xToTime,
+      xToFrame,
       yToValue,
-      timeToX,
+      frameToX,
       valueToY,
       updateKeyframe,
     ],
@@ -486,15 +500,15 @@ function PropertyGraph({
           value = k1.value + easedT * (k2.value - k1.value);
         }
 
-        points.push(timeToX(time), valueToY(value));
+        points.push(frameToX(time), valueToY(value));
       }
     }
 
     return points;
-  }, [keyframes, timeToX, valueToY]);
+  }, [keyframes, frameToX, valueToY]);
 
   // Playhead position
-  const playheadX = timeToX(currentTime - clipStartTime);
+  const playheadX = frameToX(currentTime - clipStartTime);
   const curvePoints = generateCurvePoints();
 
   // Value scale labels
@@ -551,7 +565,7 @@ function PropertyGraph({
           const startTime = Math.floor(scrollX / zoom);
           const endTime = Math.ceil((scrollX + graphWidth) / zoom);
           for (let t = startTime; t <= endTime; t++) {
-            const x = timeToX(t - clipStartTime);
+            const x = frameToX(t - clipStartTime);
             if (x >= TRACK_HEADER_WIDTH && x <= width) {
               lines.push(
                 <Line key={t} points={[x, 0, x, height]} stroke="#2a2a2a" strokeWidth={1} />,
@@ -590,7 +604,7 @@ function PropertyGraph({
 
         {/* Keyframe points and bezier handles */}
         {keyframes.map((kf, index) => {
-          const x = timeToX(kf.time);
+          const x = frameToX(kf.time);
           const y = valueToY(kf.value);
           const nextKf = keyframes[index + 1];
           const showHandles = nextKf && kf.interpolation === "Bezier";
@@ -600,7 +614,7 @@ function PropertyGraph({
               {/* Bezier handles */}
               {showHandles &&
                 (() => {
-                  const x2 = timeToX(nextKf.time);
+                  const x2 = frameToX(nextKf.time);
                   const y2 = valueToY(nextKf.value);
                   const bezier = kf.easing.custom_bezier ?? CUBIC_BEZIER_PRESETS[kf.easing.preset];
                   const dx = x2 - x;
@@ -727,20 +741,20 @@ function PropertyGraph({
 }
 
 export function KeyframeCurveEditor({ width, clipId, properties }: KeyframeCurveEditorProps) {
-  const [expandedProperties, setExpandedProperties] = useState<Set<AnimatableProperty>>(
+  const [expandedProperties, setExpandedProperties] = useState<Set<AnyAnimatableProperty>>(
     () => new Set(properties),
   );
   const [valueZooms, setValueZooms] = useState<Record<string, number>>({});
 
   const scrollX = useVideoEditorStore((s) => s.scrollX);
   const zoom = useVideoEditorStore((s) => s.zoom);
-  const currentTime = useVideoEditorStore((s) => s.currentTime);
+  const currentTime = useVideoEditorStore((s) => s.currentFrame);
   const clips = useVideoEditorStore((s) => s.clips);
 
   const clip = clips.find((c) => c.id === clipId);
   const clipStartTime = clip?.startTime ?? 0;
 
-  const toggleProperty = (property: AnimatableProperty) => {
+  const toggleProperty = (property: AnyAnimatableProperty) => {
     setExpandedProperties((prev) => {
       const next = new Set(prev);
       if (next.has(property)) {
@@ -763,7 +777,7 @@ export function KeyframeCurveEditor({ width, clipId, properties }: KeyframeCurve
   return (
     <div className="h-full overflow-hidden bg-neutral-900">
       {properties.map((property) => {
-        const config = PROPERTY_CONFIGS[property];
+        const config = PROPERTY_CONFIGS[property] ?? DEFAULT_PROPERTY_CONFIG;
         const isExpanded = expandedProperties.has(property);
         const keyframes = getKeyframesForProperty(clip.keyframes, property);
 
@@ -772,7 +786,7 @@ export function KeyframeCurveEditor({ width, clipId, properties }: KeyframeCurve
             {/* Property header */}
             <button
               type="button"
-              className="flex h-7 w-full items-center gap-2 bg-neutral-800 px-2 hover:bg-neutral-750 transition-colors"
+              className="hover:bg-neutral-750 flex h-7 w-full items-center gap-2 bg-neutral-800 px-2 transition-colors"
               onClick={() => toggleProperty(property)}
             >
               {isExpanded ? (
@@ -781,7 +795,9 @@ export function KeyframeCurveEditor({ width, clipId, properties }: KeyframeCurve
                 <ChevronRight className="h-3.5 w-3.5 text-neutral-400" />
               )}
               <div className="h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: config.color }} />
-              <span className="text-xs font-medium text-neutral-200">{config.label}</span>
+              <span className="text-xs font-medium text-neutral-200">
+                {config.label !== "Unknown" ? config.label : property}
+              </span>
               <span className="ml-auto text-xs text-neutral-500">
                 {keyframes.length} keyframe{keyframes.length !== 1 ? "s" : ""}
               </span>

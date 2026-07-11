@@ -1,0 +1,43 @@
+---
+title: Introducing Tooscut
+description: A browser-native NLE powered by WebGPU and Rust/WASM.
+author: Mohebifar
+date: 2026-03-21
+---
+
+I wanted a Photopea for video. Something you open in a tab, use for 80% of your day-to-day edits, and close. No install, no upload, no account. Just an editor.
+
+Nothing like that existed. Browser video tools are either thin wrappers around server-side render farms or drag-and-drop slideshow makers. None of them feel like sitting down in Premiere or Resolve. So I built one.
+
+## The bet on WebGPU
+
+The entire rendering pipeline is Rust compiled to WebAssembly, targeting [wgpu](https://wgpu.rs/). Every frame including compositing, text layout ([cosmic-text](https://github.com/pop-os/cosmic-text)), shape rendering, effects, and color grading is computed in GPU shaders. JavaScript never touches a pixel.
+
+This matters because it means the performance ceiling is the GPU, not the browser. Much of the heavy data lives outside the V8 heap: WASM linear memory for processing, GPU buffers in VRAM for textures, and video files that are never fully decoded into memory. That's how it handles long 4K timelines without the tab crashing.
+
+The tradeoff: WebGPU support. Chrome and Edge work well. Safari is usable. Firefox is not there yet. It's a real limitation, and I don't want to pretend otherwise.
+
+## What it actually does
+
+If you've used a desktop NLE, the feature set should feel familiar:
+
+- Multi-track timeline with linked audio/video clips, split, trim, snap
+- Node-based color grading: CDL, lift/gamma/gain wheels, RGB curves, LUT support, qualifiers, power windows
+- Keyframe animation on 40+ properties with easing presets and custom Bezier curves
+- Per-clip audio effects: 3-band EQ, compressor, noise gate, reverb
+- Export to MP4 via WebCodecs (WASM fallback when unavailable)
+
+Your files never leave your machine. Tooscut reads them through the File System Access API and streams the export directly to disk.
+
+## What's next
+
+The roadmap is shaped by the feedback so far:
+
+- **Plugin API**: I have a proof-of-concept, but the performance overhead is still too high. The goal is something like OpenFX for the browser.
+- **Speech-to-text captions**: transcription and caption editing, built in.
+- **Motion tracking**: so power windows and effects can follow subjects.
+- **Better browser support**: working around Firefox and Safari limitations where possible.
+
+The goal was never to replace Resolve for a colorist grading a feature film. It's to be the editor you reach for when you need to cut something together, add titles, fix the audio, and export — without leaving the browser.
+
+[Try it out](https://tooscut.app) or check out the [source code](https://github.com/mohebifar/tooscut).

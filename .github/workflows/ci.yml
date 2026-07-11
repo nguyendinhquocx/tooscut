@@ -11,8 +11,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  lint:
-    name: Lint
+  lint-and-typecheck:
+    name: Lint & Type Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,26 +21,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
-
-      - run: pnpm lint
-
-      - run: pnpm format:check
-
-  typecheck:
-    name: Type Check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
+          node-version: 24
           cache: pnpm
 
       - uses: dtolnay/rust-toolchain@stable
@@ -48,34 +29,50 @@ jobs:
           targets: wasm32-unknown-unknown
 
       - uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: "v0.13.1"
 
       - run: pnpm install --frozen-lockfile
 
       - run: pnpm build:wasm
 
+      - run: pnpm --filter @tooscut/render-engine build
+
+      - run: pnpm lint
+
+      - run: pnpm format
+
       - run: pnpm typecheck
 
-  # test:
-  #   name: Test
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
+      - run: pnpm knip
 
-  #     - uses: pnpm/action-setup@v4
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
-  #     - uses: actions/setup-node@v4
-  #       with:
-  #         node-version: 20
-  #         cache: pnpm
+      - uses: pnpm/action-setup@v4
 
-  #     - uses: dtolnay/rust-toolchain@stable
-  #       with:
-  #         targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
 
-  #     - uses: jetli/wasm-pack-action@v0.4.0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
 
-  #     - run: pnpm install --frozen-lockfile
+      - uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: "v0.13.1"
 
-  #     - run: pnpm build:wasm
+      - run: pnpm install --frozen-lockfile
 
-  #     - run: pnpm test
+      - run: pnpm build:wasm
+
+      - run: pnpm test
+
+      - run: pnpm --filter @tooscut/render-engine exec playwright install --with-deps chromium
+
+      - run: pnpm run --filter @tooscut/render-engine test:browser

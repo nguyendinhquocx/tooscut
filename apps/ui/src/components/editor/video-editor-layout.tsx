@@ -1,8 +1,11 @@
 import type { ReactNode } from "react";
-import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "../ui/resizable";
-import { Toggle } from "../ui/toggle";
+
 import { Eye, Move } from "lucide-react";
+
 import { useVideoEditorStore } from "../../state/video-editor-store";
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "../ui/resizable";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
+import { Toggle } from "../ui/toggle";
 
 interface VideoEditorLayoutProps {
   /** Left panel - Asset library */
@@ -40,7 +43,7 @@ export function VideoEditorLayout({
   toolbar,
 }: VideoEditorLayoutProps) {
   return (
-    <div className="flex h-screen flex-col m-0 select-none bg-background">
+    <div className="m-0 flex h-screen flex-col bg-background select-none">
       {/* Menubar/toolbar row */}
       {toolbar && <div className="shrink-0">{toolbar}</div>}
 
@@ -50,14 +53,14 @@ export function VideoEditorLayout({
           <ResizablePanelGroup orientation="horizontal">
             {/* Asset Panel */}
             <ResizablePanel defaultSize={20} minSize={350}>
-              <div className="bg-card h-full overflow-auto">{assetPanel}</div>
+              <div className="h-full overflow-auto bg-card">{assetPanel}</div>
             </ResizablePanel>
 
             <ResizableHandle withHandle orientation="horizontal" />
 
             {/* Preview Panel */}
             <ResizablePanel defaultSize={55} minSize={30}>
-              <div className="bg-background flex h-full flex-col">
+              <div className="flex h-full flex-col bg-background">
                 {/* Video Preview Canvas */}
                 <div className="flex-1 overflow-hidden">{previewPanel}</div>
 
@@ -65,7 +68,7 @@ export function VideoEditorLayout({
                 <PreviewModeToggle />
 
                 {/* Playback Controls */}
-                <div className="bg-card shrink-0 border-t border-border">{playbackControls}</div>
+                <div className="shrink-0 border-t border-border bg-card">{playbackControls}</div>
               </div>
             </ResizablePanel>
 
@@ -73,7 +76,7 @@ export function VideoEditorLayout({
 
             {/* Properties Panel */}
             <ResizablePanel defaultSize={25} minSize={15}>
-              <div className="bg-card h-full overflow-auto">{propertiesPanel}</div>
+              <div className="h-full overflow-auto bg-card">{propertiesPanel}</div>
             </ResizablePanel>
           </ResizablePanelGroup>
         </ResizablePanel>
@@ -82,7 +85,7 @@ export function VideoEditorLayout({
 
         {/* Bottom row: Timeline */}
         <ResizablePanel defaultSize={40} minSize={100}>
-          <div className="bg-card h-full overflow-hidden border-t border-border">{timeline}</div>
+          <div className="h-full overflow-hidden border-t border-border bg-card">{timeline}</div>
         </ResizablePanel>
       </ResizablePanelGroup>
     </div>
@@ -92,9 +95,22 @@ export function VideoEditorLayout({
 function PreviewModeToggle() {
   const previewMode = useVideoEditorStore((s) => s.previewMode);
   const setPreviewMode = useVideoEditorStore((s) => s.setPreviewMode);
+  const previewZoom = useVideoEditorStore((s) => s.previewZoom);
+  const setPreviewZoom = useVideoEditorStore((s) => s.setPreviewZoom);
+
+  const zoomItems = [
+    { label: "Fit", value: "fit" },
+    { label: "25%", value: "25" },
+    { label: "50%", value: "50" },
+    { label: "100%", value: "100" },
+    { label: "200%", value: "200" },
+    ...(typeof previewZoom === "number" && ![25, 50, 100, 200].includes(previewZoom)
+      ? [{ label: `${previewZoom}%`, value: String(previewZoom) }]
+      : []),
+  ];
 
   return (
-    <div className="shrink-0 flex justify-center border-t border-border bg-card py-0.5">
+    <div className="flex shrink-0 items-center justify-between border-t border-border bg-card px-2 py-0.5">
       <div className="flex gap-0.5 rounded-md p-0.5">
         <Toggle
           size="sm"
@@ -113,6 +129,27 @@ function PreviewModeToggle() {
           <Move className="h-3.5 w-3.5" />
         </Toggle>
       </div>
+
+      <Select
+        value={previewZoom === "fit" ? "fit" : String(previewZoom)}
+        onValueChange={(value) => {
+          setPreviewZoom(value === "fit" ? "fit" : Number(value));
+        }}
+        items={zoomItems}
+      >
+        <SelectTrigger className="h-6! py-0">
+          <SelectValue placeholder="Zoom" />
+        </SelectTrigger>
+        <SelectContent>
+          {zoomItems.map((item) =>
+            item ? (
+              <SelectItem key={item.value} value={item.value}>
+                {item.label}
+              </SelectItem>
+            ) : null,
+          )}
+        </SelectContent>
+      </Select>
     </div>
   );
 }

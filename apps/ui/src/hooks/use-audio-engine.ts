@@ -1,17 +1,30 @@
 /**
  * useAudioEngine - React hook for audio playback
  *
- * Uses the WASM audio engine with streaming decode via MediaBunny.
- * Audio data is decoded and uploaded incrementally, so playback can
- * start as soon as the first chunks are available.
+ * Uses the WASM audio engine with windowed decode-ahead via MediaBunny.
+ * All store values are in frames; this hook converts to seconds at the
+ * audio engine boundary.
  */
 
-import { useEffect, useRef, useCallback, useState } from "react";
-import { BrowserAudioEngine, type AudioTimelineState } from "@tooscut/render-engine";
-import { useVideoEditorStore } from "../state/video-editor-store";
-import { useAssetStore } from "../components/timeline/use-asset-store";
-import audioWasmUrl from "@tooscut/render-engine/wasm/audio-engine/audio_engine_bg.wasm?url";
+import {
+  BrowserAudioEngine,
+  framesToSeconds,
+  type AudioTimelineState,
+} from "@tooscut/render-engine";
 import audioWorkletUrl from "@tooscut/render-engine/dist/worklet/audio-engine.worklet.iife.js?url";
+import audioWasmUrl from "@tooscut/render-engine/wasm/audio-engine/audio_engine_bg.wasm?url";
+import { useEffect, useRef, useCallback, useState } from "react";
+
+import { useAssetStore } from "../components/timeline/use-asset-store";
+import { useVideoEditorStore } from "../state/video-editor-store";
+
+/** Module-level ref so other components can access the engine for metering */
+let _audioEngineInstance: BrowserAudioEngine | null = null;
+
+/** Get the current audio engine instance (for metering, etc.) */
+export function getAudioEngine(): BrowserAudioEngine | null {
+  return _audioEngineInstance;
+}
 
 /**
  * Hook to manage audio playback in the video editor
@@ -28,8 +41,10 @@ export function useAudioEngine() {
   const clips = useVideoEditorStore((state) => state.clips);
   const tracks = useVideoEditorStore((state) => state.tracks);
   const isPlaying = useVideoEditorStore((state) => state.isPlaying);
-  const currentTime = useVideoEditorStore((state) => state.currentTime);
+  const playbackSpeed = useVideoEditorStore((state) => state.playbackSpeed);
+  const currentFrame = useVideoEditorStore((state) => state.currentFrame);
   const seekVersion = useVideoEditorStore((state) => state.seekVersion);
+  const fps = useVideoEditorStore((state) => state.settings.fps);
 
   const assets = useAssetStore((state) => state.assets);
 
@@ -42,6 +57,7 @@ export function useAudioEngine() {
     });
 
     engineRef.current = engine;
+    _audioEngineInstance = engine;
 
     engine
       .init()
@@ -49,19 +65,21 @@ export function useAudioEngine() {
         setIsWasmReady(true);
         setError(null);
       })
-      .catch((err) => {
+      .catch((err: unknown) => {
         console.error("[useAudioEngine] Failed to initialize WASM:", err);
-        setError(err);
+        setError(err instanceof Error ? err : new Error(String(err)));
       });
 
+    const uploadedSources = uploadedSourcesRef.current;
     return () => {
       engine.dispose();
       engineRef.current = null;
-      uploadedSourcesRef.current.clear();
+      _audioEngineInstance = null;
+      uploadedSources.clear();
     };
   }, []);
 
-  // Stream-decode and upload audio to WASM engine
+  // Register audio sources for windowed decode-ahead playback
   useEffect(() => {
     const engine = engineRef.current;
     if (!engine || !isWasmReady) return;
@@ -72,14 +90,14 @@ export function useAudioEngine() {
       if (uploadedSourcesRef.current.has(asset.id)) continue;
       uploadedSourcesRef.current.add(asset.id);
 
-      engine.streamAudioFromUrl(asset.id, asset.url).catch((err) => {
-        console.error(`[useAudioEngine] Failed to stream audio for ${asset.id}:`, err);
+      engine.registerAudioSource(asset.id, asset.file).catch((err) => {
+        console.error(`[useAudioEngine] Failed to register audio for ${asset.id}:`, err);
         uploadedSourcesRef.current.delete(asset.id);
       });
     }
   }, [assets, isWasmReady]);
 
-  // Sync timeline state to WASM engine
+  // Sync timeline state to WASM engine (convert frames → seconds)
   useEffect(() => {
     const engine = engineRef.current;
     if (!engine || !isWasmReady) return;
@@ -90,9 +108,9 @@ export function useAudioEngine() {
         id: clip.id,
         sourceId: clip.assetId || clip.id,
         trackId: clip.trackId,
-        startTime: clip.startTime,
-        duration: clip.duration,
-        inPoint: clip.inPoint,
+        startTime: framesToSeconds(clip.startTime, fps),
+        duration: framesToSeconds(clip.duration, fps),
+        inPoint: framesToSeconds(clip.inPoint, fps),
         speed: clip.speed,
         gain: clip.volume ?? 1.0,
         fadeIn: 0,
@@ -118,17 +136,18 @@ export function useAudioEngine() {
     };
 
     engine.setTimeline(timelineState);
-  }, [clips, tracks, isWasmReady]);
+  }, [clips, tracks, fps, isWasmReady]);
 
-  // Sync playback state
+  // Sync playback state (convert frame → seconds for seek)
   useEffect(() => {
     const engine = engineRef.current;
     if (!engine || !isWasmReady) return;
 
     if (isPlaying) {
-      const time = useVideoEditorStore.getState().currentTime;
+      const frame = useVideoEditorStore.getState().currentFrame;
+      const seekFps = useVideoEditorStore.getState().settings.fps;
       void engine.resume().then(() => {
-        engine.seek(time);
+        engine.seek(framesToSeconds(frame, seekFps));
         engine.setPlaying(true);
       });
     } else {
@@ -136,12 +155,21 @@ export function useAudioEngine() {
     }
   }, [isPlaying, isWasmReady]);
 
+  // Sync playback rate to audio engine
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!engine || !isWasmReady) return;
+
+    engine.setPlaybackRate(playbackSpeed);
+  }, [playbackSpeed, isWasmReady]);
+
   // Seek audio on explicit user action (works during playback and when paused)
   useEffect(() => {
     if (seekVersion === 0) return;
     const engine = engineRef.current;
     if (engine && isWasmReady) {
-      engine.seek(useVideoEditorStore.getState().currentTime);
+      const state = useVideoEditorStore.getState();
+      engine.seek(framesToSeconds(state.currentFrame, state.settings.fps));
     }
   }, [seekVersion, isWasmReady]);
 
@@ -150,9 +178,9 @@ export function useAudioEngine() {
     if (isPlaying) return;
     const engine = engineRef.current;
     if (engine && isWasmReady) {
-      engine.seek(currentTime);
+      engine.seek(framesToSeconds(currentFrame, fps));
     }
-  }, [currentTime, isPlaying, isWasmReady]);
+  }, [currentFrame, isPlaying, fps, isWasmReady]);
 
   // Resume audio context on user interaction
   const resume = useCallback(async () => {
@@ -167,5 +195,6 @@ export function useAudioEngine() {
     isWasmReady,
     error,
     resume,
+    engineRef,
   };
 }

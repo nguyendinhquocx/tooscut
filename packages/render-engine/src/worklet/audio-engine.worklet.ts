@@ -1,20 +1,11 @@
 /// <reference types="@types/audioworklet" />
 import "./polyfills";
-
 import { AudioEngine, initSync } from "../../wasm/audio-engine/audio_engine.js";
 
 interface InitMessage {
   type: "init";
   wasmBinary: ArrayBuffer;
   sampleRate: number;
-}
-
-interface UploadAudioMessage {
-  type: "upload-audio";
-  sourceId: string;
-  pcmData: Float32Array;
-  sampleRate: number;
-  channels: number;
 }
 
 interface RemoveAudioMessage {
@@ -42,36 +33,50 @@ interface SetMasterVolumeMessage {
   volume: number;
 }
 
-interface CreateStreamingSourceMessage {
-  type: "create-streaming-source";
+interface SetPlaybackRateMessage {
+  type: "set-playback-rate";
+  rate: number;
+}
+
+interface CreateWindowedSourceMessage {
+  type: "create-windowed-source";
   sourceId: string;
   sampleRate: number;
   channels: number;
-  estimatedDuration: number;
+  duration: number;
+  maxBufferSeconds: number;
 }
 
-interface AppendAudioChunkMessage {
-  type: "append-audio-chunk";
+interface UpdateSourceBufferMessage {
+  type: "update-source-buffer";
   sourceId: string;
+  startTime: number;
   pcmData: Float32Array;
 }
 
-interface FinalizeAudioMessage {
-  type: "finalize-audio";
+interface ClearSourceBufferMessage {
+  type: "clear-source-buffer";
   sourceId: string;
+}
+
+interface UpdateSourceSampleRateMessage {
+  type: "update-source-sample-rate";
+  sourceId: string;
+  sampleRate: number;
 }
 
 type WorkletMessage =
   | InitMessage
-  | UploadAudioMessage
   | RemoveAudioMessage
   | SetTimelineMessage
   | SetPlayingMessage
   | SeekMessage
   | SetMasterVolumeMessage
-  | CreateStreamingSourceMessage
-  | AppendAudioChunkMessage
-  | FinalizeAudioMessage;
+  | SetPlaybackRateMessage
+  | CreateWindowedSourceMessage
+  | UpdateSourceBufferMessage
+  | ClearSourceBufferMessage
+  | UpdateSourceSampleRateMessage;
 
 /**
  * AudioWorkletProcessor that uses WASM for audio mixing.
@@ -101,15 +106,6 @@ class AudioEngineProcessor extends AudioWorkletProcessor {
         void this.initEngine(message.wasmBinary, message.sampleRate);
         break;
 
-      case "upload-audio":
-        this.engine?.upload_audio(
-          message.sourceId,
-          message.pcmData,
-          message.sampleRate,
-          message.channels,
-        );
-        break;
-
       case "remove-audio":
         this.engine?.remove_audio(message.sourceId);
         break;
@@ -131,21 +127,30 @@ class AudioEngineProcessor extends AudioWorkletProcessor {
         this.engine?.set_master_volume(message.volume);
         break;
 
-      case "create-streaming-source":
-        this.engine?.create_streaming_source(
+      case "set-playback-rate":
+        this.engine?.set_playback_rate(message.rate);
+        break;
+
+      case "create-windowed-source":
+        this.engine?.create_windowed_source(
           message.sourceId,
           message.sampleRate,
           message.channels,
-          message.estimatedDuration,
+          message.duration,
+          message.maxBufferSeconds,
         );
         break;
 
-      case "append-audio-chunk":
-        this.engine?.append_audio_chunk(message.sourceId, message.pcmData);
+      case "update-source-buffer":
+        this.engine?.update_source_buffer(message.sourceId, message.startTime, message.pcmData);
         break;
 
-      case "finalize-audio":
-        this.engine?.finalize_audio(message.sourceId);
+      case "clear-source-buffer":
+        this.engine?.clear_source_buffer(message.sourceId);
+        break;
+
+      case "update-source-sample-rate":
+        this.engine?.update_source_sample_rate(message.sourceId, message.sampleRate);
         break;
     }
   }

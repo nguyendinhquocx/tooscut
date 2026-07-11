@@ -10,21 +10,23 @@
  * Use the curve editor in the timeline to adjust easing.
  */
 
+import type { AnyAnimatableProperty } from "@tooscut/render-engine";
+
 import { ChevronLeft, ChevronRight, X } from "lucide-react";
-import { cn } from "../../lib/utils";
-import { Button } from "../ui/button";
-import { useVideoEditorStore } from "../../state/video-editor-store";
-import type { AnimatableProperty } from "@tooscut/render-engine";
+
 import {
   isAtKeyframe,
   isPropertyKeyframed,
   getAdjacentKeyframeTimes,
   getKeyframeIndexAtTime,
 } from "../../lib/keyframe-utils";
+import { cn } from "../../lib/utils";
+import { useVideoEditorStore } from "../../state/video-editor-store";
+import { Button } from "../ui/button";
 
 interface KeyframeButtonProps {
   clipId: string;
-  property: AnimatableProperty;
+  property: AnyAnimatableProperty;
   /** Current value of the property (for adding new keyframes) */
   currentValue: number;
   /** Callback when resetting to default (called after removing all keyframes) */
@@ -80,7 +82,7 @@ export function KeyframeButton({
   onReset,
   clipStartTime,
 }: KeyframeButtonProps) {
-  const currentTime = useVideoEditorStore((s) => s.currentTime);
+  const currentTime = useVideoEditorStore((s) => s.currentFrame);
   const clips = useVideoEditorStore((s) => s.clips);
   const addKeyframe = useVideoEditorStore((s) => s.addKeyframe);
   const deleteKeyframe = useVideoEditorStore((s) => s.deleteKeyframe);
@@ -131,12 +133,12 @@ export function KeyframeButton({
       <Button
         variant="ghost"
         size="icon"
-        className={cn("h-5 w-5 p-0", prevTime === null && "cursor-default opacity-30")}
+        className={cn("size-4 p-0", prevTime === null && "cursor-default opacity-30")}
         onClick={handlePrevClick}
         disabled={prevTime === null}
         title="Previous keyframe"
       >
-        <ChevronLeft className="h-3 w-3" />
+        <ChevronLeft className="size-3" />
       </Button>
 
       {/* Diamond toggle button */}
@@ -144,21 +146,25 @@ export function KeyframeButton({
         variant="ghost"
         size="icon"
         className={cn(
-          "h-5 w-5 p-0",
+          "size-4 p-0",
           atKeyframe && "text-yellow-500",
           hasKeyframes && !atKeyframe && "text-yellow-500/60",
         )}
         onClick={handleDiamondClick}
         title={atKeyframe ? "Remove keyframe" : "Add keyframe"}
       >
-        <DiamondIcon filled={atKeyframe} halfFilled={hasKeyframes && !atKeyframe} />
+        <DiamondIcon
+          className="size-3"
+          filled={atKeyframe}
+          halfFilled={hasKeyframes && !atKeyframe}
+        />
       </Button>
 
       {/* Next keyframe button */}
       <Button
         variant="ghost"
         size="icon"
-        className={cn("h-5 w-5 p-0", nextTime === null && "cursor-default opacity-30")}
+        className={cn("size-4 p-0", nextTime === null && "cursor-default opacity-30")}
         onClick={handleNextClick}
         disabled={nextTime === null}
         title="Next keyframe"
@@ -171,7 +177,7 @@ export function KeyframeButton({
         <Button
           variant="ghost"
           size="icon"
-          className="h-5 w-5 p-0 text-muted-foreground hover:text-destructive"
+          className="size-4 p-0 text-muted-foreground hover:text-destructive"
           onClick={handleResetClick}
           title="Remove all keyframes"
         >

@@ -6,6 +6,7 @@
  */
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+
 import { PixelAsserter, SnapshotTester } from "../src/testing/snapshot-tester.js";
 import {
   createFrame,
@@ -36,7 +37,6 @@ describe("compositor", () => {
   });
 
   afterEach(async () => {
-    // Capture screenshot after each test for visual verification
     await tester.captureScreenshot();
   });
 
@@ -56,6 +56,9 @@ describe("compositor", () => {
       pixels.expectPixelAtPercent(50, 50).redGreaterThan(200);
       pixels.expectPixelAtPercent(50, 50).greenLessThan(50);
       pixels.expectPixelAtPercent(50, 50).blueLessThan(50);
+
+      // Visual snapshot (creates reference on first run, compares on subsequent)
+      await expect(tester).toMatchRenderSnapshot(frame, "basic-solid-red");
     });
 
     it("renders a solid green layer", async () => {
@@ -246,17 +249,17 @@ describe("compositor", () => {
       const normalPixels = new PixelAsserter(normalData);
       const brightPixels = new PixelAsserter(brightData);
 
-      // Only compare if we can actually read pixels
-      if (normalPixels.hasVisiblePixels() && brightPixels.hasVisiblePixels()) {
-        // Brightened image should have higher average luminance
-        let normalSum = 0;
-        let brightSum = 0;
-        for (let i = 0; i < normalData.data.length; i += 4) {
-          normalSum += normalData.data[i] + normalData.data[i + 1] + normalData.data[i + 2];
-          brightSum += brightData.data[i] + brightData.data[i + 1] + brightData.data[i + 2];
-        }
-        expect(brightSum).toBeGreaterThan(normalSum);
+      expect(normalPixels.hasVisiblePixels()).toBe(true);
+      expect(brightPixels.hasVisiblePixels()).toBe(true);
+
+      // Brightened image should have higher average luminance
+      let normalSum = 0;
+      let brightSum = 0;
+      for (let i = 0; i < normalData.data.length; i += 4) {
+        normalSum += normalData.data[i] + normalData.data[i + 1] + normalData.data[i + 2];
+        brightSum += brightData.data[i] + brightData.data[i + 1] + brightData.data[i + 2];
       }
+      expect(brightSum).toBeGreaterThan(normalSum);
     });
 
     it("applies saturation effect (grayscale)", async () => {
@@ -278,8 +281,8 @@ describe("compositor", () => {
       expect(imageData.width).toBe(256);
     });
 
+    // eslint-disable-next-line jest/no-disabled-tests -- Blur effect not yet implemented in compositor
     it.skip("applies blur effect", async () => {
-      // TODO: Blur effect not yet implemented in the compositor
       const checkerData = generateCheckerboardTexture(256, 256, 8);
       tester.addRawTexture("checker", 256, 256, checkerData);
 
@@ -293,27 +296,26 @@ describe("compositor", () => {
 
       const sharpPixels = new PixelAsserter(sharpData);
 
-      // Only compare if we can actually read pixels
-      if (sharpPixels.hasVisiblePixels()) {
-        // Calculate variance - blurred image should have lower variance
-        function calculateVariance(data: Uint8ClampedArray): number {
-          let sum = 0;
-          let sumSq = 0;
-          const n = data.length / 4;
-          for (let i = 0; i < data.length; i += 4) {
-            const lum = (data[i] + data[i + 1] + data[i + 2]) / 3;
-            sum += lum;
-            sumSq += lum * lum;
-          }
-          const mean = sum / n;
-          return sumSq / n - mean * mean;
+      expect(sharpPixels.hasVisiblePixels()).toBe(true);
+
+      // Calculate variance - blurred image should have lower variance
+      function calculateVariance(data: Uint8ClampedArray): number {
+        let sum = 0;
+        let sumSq = 0;
+        const n = data.length / 4;
+        for (let i = 0; i < data.length; i += 4) {
+          const lum = (data[i] + data[i + 1] + data[i + 2]) / 3;
+          sum += lum;
+          sumSq += lum * lum;
         }
-
-        const sharpVariance = calculateVariance(sharpData.data);
-        const blurredVariance = calculateVariance(blurredData.data);
-
-        expect(blurredVariance).toBeLessThan(sharpVariance);
+        const mean = sum / n;
+        return sumSq / n - mean * mean;
       }
+
+      const sharpVariance = calculateVariance(sharpData.data);
+      const blurredVariance = calculateVariance(blurredData.data);
+
+      expect(blurredVariance).toBeLessThan(sharpVariance);
     });
   });
 
@@ -354,13 +356,12 @@ describe("compositor", () => {
       const imageData = await tester.render(frame);
       const pixels = new PixelAsserter(imageData);
 
-      // Only check if we can read pixels
-      if (pixels.hasVisiblePixels()) {
-        const [r, g, b] = pixels.getPixel(128, 200);
-        const luminance = (r + g + b) / 3;
-        expect(luminance).toBeLessThan(150); // Darkened
-        expect(luminance).toBeGreaterThan(0); // But not pure black
-      }
+      expect(pixels.hasVisiblePixels()).toBe(true);
+
+      const [r, g, b] = pixels.getPixel(128, 200);
+      const luminance = (r + g + b) / 3;
+      expect(luminance).toBeLessThan(150); // Darkened
+      expect(luminance).toBeGreaterThan(0); // But not pure black
     });
   });
 
@@ -542,6 +543,7 @@ describe("compositor", () => {
       // Note: Snapshot tests are skipped in headless CI because WebGPU canvas
       // readback doesn't work properly with SwiftShader. Run with a visible
       // browser to generate/update snapshots.
+      // eslint-disable-next-line jest/no-disabled-tests
       it.skip(`renders ${testCase.name}: ${testCase.description}`, async () => {
         tester.resize(testCase.width, testCase.height);
         tester.clearAllTextures();

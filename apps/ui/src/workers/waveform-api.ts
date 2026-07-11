@@ -3,6 +3,7 @@
  */
 
 import * as Comlink from "comlink";
+
 import type { WaveformWorkerApi, WaveformResult } from "./waveform.worker";
 
 let workerInstance: Comlink.Remote<WaveformWorkerApi> | null = null;
@@ -29,23 +30,4 @@ export async function extractWaveform(
 ): Promise<WaveformResult | null> {
   const worker = getWorker();
   return worker.extractWaveform(assetId, url);
-}
-
-/**
- * Clear cached data for an asset.
- */
-export async function clearWaveformCache(assetId?: string): Promise<void> {
-  const worker = getWorker();
-  return worker.clearCache(assetId);
-}
-
-/**
- * Terminate the worker.
- */
-export function terminateWaveformWorker(): void {
-  if (workerRef) {
-    workerRef.terminate();
-    workerRef = null;
-    workerInstance = null;
-  }
 }

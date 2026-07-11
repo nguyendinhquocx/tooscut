@@ -1,14 +1,5 @@
-/**
- * Main video editor state store using render-engine clip operations.
- *
- * This store manages the editor state including tracks, clips, and assets.
- * All clip operations use the immutable functions from @tooscut/render-engine.
- */
-import { create } from "zustand";
-import { subscribeWithSelector } from "zustand/middleware";
-import { temporal } from "zundo";
 import type { TemporalState } from "zundo";
-import { useStore } from "zustand";
+
 import {
   type EditableClip,
   type EditableTrack,
@@ -23,13 +14,15 @@ import {
   type LineBox,
   type KeyframeTracks,
   type Keyframe,
-  type AnimatableProperty,
+  type AnyAnimatableProperty,
   type Interpolation,
   type EasingPreset,
   type Transition,
   type CrossTransitionRef,
   type CrossTransitionType,
   type AudioEffectsParams,
+  type FrameRate,
+  type ColorGrading,
   addTrackPair,
   removeTrackPair,
   addClip,
@@ -49,6 +42,16 @@ import {
   type TimelineClip as RenderTimelineClip,
   type Track as RenderTrack,
 } from "@tooscut/render-engine";
+import { temporal } from "zundo";
+/**
+ * Main video editor state store using render-engine clip operations.
+ *
+ * This store manages the editor state including tracks, clips, and assets.
+ * All clip operations use the immutable functions from @tooscut/render-engine.
+ */
+import { create } from "zustand";
+import { useStore } from "zustand";
+import { subscribeWithSelector } from "zustand/middleware";
 
 // ============================================================================
 // Types
@@ -73,6 +76,7 @@ export interface VideoClip extends VisualClipBase {
   assetId: string;
   volume?: number;
   linkedClipId?: string;
+  colorGrading?: ColorGrading;
 }
 
 export interface AudioClip extends EditableClip {
@@ -92,6 +96,7 @@ export interface AudioClip extends EditableClip {
 export interface ImageClip extends VisualClipBase {
   type: "image";
   assetId: string;
+  colorGrading?: ColorGrading;
 }
 
 export interface TextClip extends VisualClipBase {
@@ -117,7 +122,7 @@ export interface LineClip extends VisualClipBase {
 export type EditorClip = VideoClip | AudioClip | ImageClip | TextClip | ShapeClip | LineClip;
 
 /** Input type for adding a new clip (id, inPoint, trackId, transform generated automatically) */
-export interface NewClipInput {
+interface NewClipInput {
   type: EditorClip["type"];
   startTime: number;
   duration: number;
@@ -143,16 +148,22 @@ export interface NewClipInput {
 
 /**
  * Media asset stored in the editor.
+ * Duration is in frame counts relative to the project frame rate.
  */
 export interface MediaAsset {
   id: string;
-  type: "video" | "audio" | "image";
+  type: "video" | "audio" | "image" | "lut";
   name: string;
   url: string;
+  /** Asset duration in frames (project frame rate). 0 for non-temporal assets like LUTs. */
   duration: number;
   width?: number;
   height?: number;
   thumbnailUrl?: string;
+  /** Native frame rate of the source media (for frame-accurate extraction) */
+  sourceFps?: FrameRate;
+  /** LUT cube dimension (e.g. 17, 33, 65). Only present for type="lut". */
+  lutSize?: number;
 }
 
 /**
@@ -161,7 +172,7 @@ export interface MediaAsset {
 export interface ProjectSettings {
   width: number;
   height: number;
-  fps: number;
+  fps: FrameRate;
 }
 
 // ============================================================================
@@ -176,9 +187,13 @@ interface VideoEditorState {
   tracks: EditableTrack[];
   clips: EditorClip[];
   crossTransitions: CrossTransitionRef[];
-  currentTime: number;
-  duration: number;
+  /** Current playhead position in frames (project frame rate) */
+  currentFrame: number;
+  /** Total project duration in frames (project frame rate) */
+  durationFrames: number;
   isPlaying: boolean;
+  /** Playback speed multiplier (negative for reverse). 0 = paused, 1 = normal, -1 = reverse, etc. */
+  playbackSpeed: number;
   /** Incremented on user-initiated seeks so audio engine can detect them */
   seekVersion: number;
 
@@ -194,8 +209,12 @@ interface VideoEditorState {
   zoom: number;
   scrollX: number;
   scrollY: number;
+  trackHeights: Record<string, number>;
   activeTool: "select" | "razor";
   previewMode: "view" | "transform";
+  /** Preview canvas zoom: "fit" auto-fills container, or a percentage (e.g. 50, 100) */
+  previewZoom: "fit" | number;
+  exportDialogOpen: boolean;
 
   // Assets
   assets: MediaAsset[];
@@ -213,18 +232,23 @@ interface VideoEditorState {
   updateAssetUrl: (assetId: string, url: string) => void;
 
   // Actions - Playback
-  setCurrentTime: (time: number) => void;
-  /** Seek to a time (user-initiated) — also increments seekVersion for audio sync */
-  seekTo: (time: number) => void;
+  setCurrentFrame: (frame: number) => void;
+  /** Seek to a frame (user-initiated) — also increments seekVersion for audio sync */
+  seekTo: (frame: number) => void;
   setIsPlaying: (playing: boolean) => void;
   togglePlayback: () => void;
+  /** Set playback speed (negative for reverse, 0 to pause) */
+  setPlaybackSpeed: (speed: number) => void;
 
   // Actions - View
   setZoom: (zoom: number) => void;
   setScrollX: (scrollX: number) => void;
   setScrollY: (scrollY: number) => void;
+  setTrackHeight: (trackId: string, height: number) => void;
   setActiveTool: (tool: "select" | "razor") => void;
   setPreviewMode: (mode: "view" | "transform") => void;
+  setPreviewZoom: (zoom: "fit" | number) => void;
+  setExportDialogOpen: (open: boolean) => void;
 
   // Actions - Selection
   setSelectedClipIds: (ids: string[]) => void;
@@ -234,6 +258,8 @@ interface VideoEditorState {
 
   // Actions - Clipboard
   copySelectedClips: () => void;
+  cutSelectedClips: () => void;
+  duplicateSelectedClips: () => void;
   pasteClipsAtPlayhead: () => void;
 
   // Actions - Tracks
@@ -287,22 +313,25 @@ interface VideoEditorState {
   updateClipLineStyle: (clipId: string, style: Partial<LineStyle>) => void;
   updateClipLineBox: (clipId: string, box: Partial<LineBox>) => void;
 
+  // Actions - Color Grading (video/image clips)
+  updateClipColorGrading: (clipId: string, colorGrading: ColorGrading) => void;
+
   // Actions - Keyframes
   addKeyframe: (
     clipId: string,
-    property: AnimatableProperty,
+    property: AnyAnimatableProperty,
     time: number,
     value: number,
     options?: { interpolation?: Interpolation; easing?: EasingPreset },
   ) => void;
   updateKeyframe: (
     clipId: string,
-    property: AnimatableProperty,
+    property: AnyAnimatableProperty,
     keyframeIndex: number,
     updates: Partial<Keyframe>,
   ) => void;
-  deleteKeyframe: (clipId: string, property: AnimatableProperty, keyframeIndex: number) => void;
-  removeAllKeyframes: (clipId: string, property: AnimatableProperty) => void;
+  deleteKeyframe: (clipId: string, property: AnyAnimatableProperty, keyframeIndex: number) => void;
+  removeAllKeyframes: (clipId: string, property: AnyAnimatableProperty) => void;
 
   // Actions - Transitions
   setClipTransitionIn: (clipId: string, transition: Transition | null) => void;
@@ -349,7 +378,7 @@ function validateCrossTransitions(
     if (outgoing.trackId !== incoming.trackId) return false;
     const outgoingEnd = outgoing.startTime + outgoing.duration;
     const gap = incoming.startTime - outgoingEnd;
-    return gap <= 0.1;
+    return gap <= 1;
   });
 }
 
@@ -385,10 +414,14 @@ function availableExtensionBefore(clip: EditorClip): number {
   return Math.max(0, clip.inPoint / speed);
 }
 
-function calculateDuration(clips: EditorClip[]): number {
-  if (clips.length === 0) return 30; // Default 30 seconds
+/** Calculate project duration in frames. Adds 150 frames (~5s at 30fps) padding after last clip. */
+function calculateDurationFrames(clips: EditorClip[], fps: FrameRate): number {
+  const fpsFloat = fps.numerator / fps.denominator;
+  const defaultDuration = Math.round(30 * fpsFloat); // 30 seconds default
+  const padding = Math.round(5 * fpsFloat); // 5 seconds padding
+  if (clips.length === 0) return defaultDuration;
   const maxEnd = Math.max(...clips.map((c) => c.startTime + c.duration));
-  return Math.max(30, maxEnd + 5);
+  return Math.max(defaultDuration, maxEnd + padding);
 }
 
 /**
@@ -633,15 +666,16 @@ export const useVideoEditorStore = create<VideoEditorState>()(
         settings: {
           width: 1920,
           height: 1080,
-          fps: 30,
+          fps: { numerator: 30, denominator: 1 },
         },
 
         tracks: [],
         clips: [],
         crossTransitions: [],
-        currentTime: 0,
-        duration: 30,
+        currentFrame: 0,
+        durationFrames: 900, // 30s at 30fps
         isPlaying: false,
+        playbackSpeed: 1,
         seekVersion: 0,
 
         selectedClipIds: [],
@@ -649,11 +683,14 @@ export const useVideoEditorStore = create<VideoEditorState>()(
         selectedCrossTransition: null,
         clipboard: [],
 
-        zoom: 50,
+        zoom: 1.67, // pixels per frame (~50px/s at 30fps)
         scrollX: 0,
         scrollY: 0,
+        trackHeights: {},
         activeTool: "select" as const,
         previewMode: "transform" as const,
+        previewZoom: "fit",
+        exportDialogOpen: false,
 
         assets: [],
 
@@ -665,12 +702,13 @@ export const useVideoEditorStore = create<VideoEditorState>()(
             crossTransitions: data.crossTransitions ?? [],
             assets: data.assets,
             settings: data.settings,
-            currentTime: 0,
+            currentFrame: 0,
             isPlaying: false,
+            playbackSpeed: 1,
             selectedClipIds: [],
             selectedTransition: null,
             selectedCrossTransition: null,
-            duration: calculateDuration(data.clips),
+            durationFrames: calculateDurationFrames(data.clips, data.settings.fps),
           }),
 
         resetStore: () =>
@@ -679,17 +717,20 @@ export const useVideoEditorStore = create<VideoEditorState>()(
             clips: [],
             crossTransitions: [],
             assets: [],
-            settings: { width: 1920, height: 1080, fps: 30 },
-            currentTime: 0,
+            settings: { width: 1920, height: 1080, fps: { numerator: 30, denominator: 1 } },
+            currentFrame: 0,
             isPlaying: false,
+            playbackSpeed: 1,
             selectedClipIds: [],
             selectedTransition: null,
             selectedCrossTransition: null,
-            zoom: 50,
+            zoom: 1.67, // pixels per frame (~50px/s at 30fps)
             scrollX: 0,
             scrollY: 0,
+            trackHeights: {},
             activeTool: "select" as const,
-            duration: 30,
+            exportDialogOpen: false,
+            durationFrames: 900, // 30s at 30fps
           }),
 
         setSettings: (updates) =>
@@ -703,21 +744,32 @@ export const useVideoEditorStore = create<VideoEditorState>()(
           })),
 
         // Playback actions
-        setCurrentTime: (time) => set({ currentTime: Math.max(0, time) }),
-        seekTo: (time) =>
+        setCurrentFrame: (frame) => set({ currentFrame: Math.max(0, Math.round(frame)) }),
+        seekTo: (frame) =>
           set((state) => ({
-            currentTime: Math.max(0, time),
+            currentFrame: Math.max(0, Math.round(frame)),
             seekVersion: state.seekVersion + 1,
           })),
         setIsPlaying: (isPlaying) => set({ isPlaying }),
         togglePlayback: () => set((state) => ({ isPlaying: !state.isPlaying })),
+        setPlaybackSpeed: (speed) => set({ playbackSpeed: speed }),
 
         // View actions
-        setZoom: (zoom) => set({ zoom: Math.max(1, Math.min(500, zoom)) }),
+        setZoom: (zoom) => set({ zoom: Math.max(0.03, Math.min(20, zoom)) }),
         setScrollX: (scrollX) => set({ scrollX: Math.max(0, scrollX) }),
         setScrollY: (scrollY) => set({ scrollY: Math.max(0, scrollY) }),
+        setTrackHeight: (trackId, height) =>
+          set((state) => {
+            const updates: Record<string, number> = { [trackId]: height };
+            // Mirror height to paired track
+            const pairedId = getPairedTrackIdFromTracks(state.tracks, trackId);
+            if (pairedId) updates[pairedId] = height;
+            return { trackHeights: { ...state.trackHeights, ...updates } };
+          }),
         setActiveTool: (activeTool) => set({ activeTool }),
         setPreviewMode: (previewMode) => set({ previewMode }),
+        setPreviewZoom: (previewZoom) => set({ previewZoom }),
+        setExportDialogOpen: (exportDialogOpen) => set({ exportDialogOpen }),
 
         // Selection actions
         setSelectedClipIds: (ids) =>
@@ -737,8 +789,117 @@ export const useVideoEditorStore = create<VideoEditorState>()(
         copySelectedClips: () => {
           const state = get();
           if (state.selectedClipIds.length === 0) return;
-          const clipsToCopy = state.clips.filter((c) => state.selectedClipIds.includes(c.id));
+
+          // Collect selected clips and their linked pairs
+          const idsTosCopy = new Set(state.selectedClipIds);
+          for (const clipId of state.selectedClipIds) {
+            const clip = state.clips.find((c) => c.id === clipId);
+            if (clip?.linkedClipId) {
+              idsTosCopy.add(clip.linkedClipId);
+            }
+          }
+
+          const clipsToCopy = state.clips.filter((c) => idsTosCopy.has(c.id));
           set({ clipboard: clipsToCopy });
+        },
+
+        cutSelectedClips: () => {
+          const state = get();
+          if (state.selectedClipIds.length === 0) return;
+
+          // Collect selected clips and their linked pairs
+          const idsToCopy = new Set(state.selectedClipIds);
+          for (const clipId of state.selectedClipIds) {
+            const clip = state.clips.find((c) => c.id === clipId);
+            if (clip?.linkedClipId) {
+              idsToCopy.add(clip.linkedClipId);
+            }
+          }
+
+          const clipsToCopy = state.clips.filter((c) => idsToCopy.has(c.id));
+          set({ clipboard: clipsToCopy });
+
+          // Then delete all selected clips (and their linked pairs)
+          const clipsToDelete = new Set<string>();
+          for (const clipId of state.selectedClipIds) {
+            clipsToDelete.add(clipId);
+            const clip = state.clips.find((c) => c.id === clipId);
+            if (clip?.linkedClipId) {
+              clipsToDelete.add(clip.linkedClipId);
+            }
+          }
+
+          for (const clipId of clipsToDelete) {
+            get().removeClip(clipId);
+          }
+        },
+
+        duplicateSelectedClips: () => {
+          const state = get();
+          if (state.selectedClipIds.length === 0) return;
+
+          // Collect selected clips and their linked pairs
+          const idsToDuplicate = new Set(state.selectedClipIds);
+          for (const clipId of state.selectedClipIds) {
+            const clip = state.clips.find((c) => c.id === clipId);
+            if (clip?.linkedClipId) {
+              idsToDuplicate.add(clip.linkedClipId);
+            }
+          }
+
+          const selectedClips = state.clips.filter((c) => idsToDuplicate.has(c.id));
+          if (selectedClips.length === 0) return;
+
+          // Find the end of the rightmost selected clip
+          const rightmostEnd = Math.max(...selectedClips.map((c) => c.startTime + c.duration));
+
+          // Build old-id → new-id map
+          const idMap = new Map<string, string>();
+          for (const clip of selectedClips) {
+            idMap.set(clip.id, generateId());
+          }
+
+          const offset = rightmostEnd - Math.min(...selectedClips.map((c) => c.startTime));
+          const newClipIds: string[] = [];
+          const newClips: EditorClip[] = [];
+          for (const clip of selectedClips) {
+            const newId = idMap.get(clip.id)!;
+            newClipIds.push(newId);
+
+            // Resolve linked clip id within the duplicated group
+            let newLinkedId: string | undefined;
+            if ("linkedClipId" in clip && clip.linkedClipId) {
+              newLinkedId = idMap.get(clip.linkedClipId);
+            }
+
+            newClips.push({
+              ...clip,
+              id: newId,
+              startTime: clip.startTime + offset,
+              ...(newLinkedId !== undefined
+                ? { linkedClipId: newLinkedId }
+                : { linkedClipId: undefined }),
+            } as EditorClip);
+          }
+
+          set((s) => {
+            let clips = s.clips;
+            for (const newClip of newClips) {
+              clips = addClip(clips, newClip);
+              clips = resolveOverlaps(
+                clips,
+                s.tracks,
+                newClip.id,
+                newClip.startTime,
+                newClip.trackId,
+              );
+            }
+            return {
+              clips,
+              selectedClipIds: newClipIds,
+              durationFrames: calculateDurationFrames(clips, get().settings.fps),
+            };
+          });
         },
 
         pasteClipsAtPlayhead: () => {
@@ -747,7 +908,7 @@ export const useVideoEditorStore = create<VideoEditorState>()(
 
           // Calculate the offset: shift all pasted clips so the earliest starts at playhead
           const earliestStart = Math.min(...state.clipboard.map((c) => c.startTime));
-          const offset = state.currentTime - earliestStart;
+          const offset = state.currentFrame - earliestStart;
 
           // Build an old-id → new-id map for relinking
           const idMap = new Map<string, string>();
@@ -756,6 +917,7 @@ export const useVideoEditorStore = create<VideoEditorState>()(
           }
 
           const newClipIds: string[] = [];
+          const newClips: EditorClip[] = [];
           for (const clip of state.clipboard) {
             const newId = idMap.get(clip.id)!;
             newClipIds.push(newId);
@@ -766,24 +928,34 @@ export const useVideoEditorStore = create<VideoEditorState>()(
               newLinkedId = idMap.get(clip.linkedClipId);
             }
 
-            const newClip: EditorClip = {
+            newClips.push({
               ...clip,
               id: newId,
               startTime: clip.startTime + offset,
               ...(newLinkedId !== undefined
                 ? { linkedClipId: newLinkedId }
                 : { linkedClipId: undefined }),
-            } as EditorClip;
-
-            set((s) => {
-              let clips = addClip(s.clips, newClip);
-              clips = resolveOverlaps(clips, s.tracks, newId, newClip.startTime, newClip.trackId);
-              return { clips, duration: calculateDuration(clips) };
-            });
+            } as EditorClip);
           }
 
-          // Select the newly pasted clips
-          set({ selectedClipIds: newClipIds });
+          set((s) => {
+            let clips = s.clips;
+            for (const newClip of newClips) {
+              clips = addClip(clips, newClip);
+              clips = resolveOverlaps(
+                clips,
+                s.tracks,
+                newClip.id,
+                newClip.startTime,
+                newClip.trackId,
+              );
+            }
+            return {
+              clips,
+              selectedClipIds: newClipIds,
+              durationFrames: calculateDurationFrames(clips, get().settings.fps),
+            };
+          });
         },
 
         // Track actions
@@ -807,7 +979,7 @@ export const useVideoEditorStore = create<VideoEditorState>()(
               tracks,
               clips,
               selectedClipIds: state.selectedClipIds.filter((id) => clips.some((c) => c.id === id)),
-              duration: calculateDuration(clips),
+              durationFrames: calculateDurationFrames(clips, get().settings.fps),
             };
           }),
 
@@ -888,7 +1060,7 @@ export const useVideoEditorStore = create<VideoEditorState>()(
             clips = resolveOverlaps(clips, state.tracks, id, newClip.startTime, trackId);
             return {
               clips,
-              duration: calculateDuration(clips),
+              durationFrames: calculateDurationFrames(clips, get().settings.fps),
             };
           });
 
@@ -906,7 +1078,7 @@ export const useVideoEditorStore = create<VideoEditorState>()(
               clips,
               crossTransitions,
               selectedClipIds: state.selectedClipIds.filter((id) => clips.some((c) => c.id === id)),
-              duration: calculateDuration(clips),
+              durationFrames: calculateDurationFrames(clips, get().settings.fps),
             };
           }),
 
@@ -928,7 +1100,7 @@ export const useVideoEditorStore = create<VideoEditorState>()(
             return {
               clips,
               crossTransitions: validateCrossTransitions(clips, state.crossTransitions),
-              duration: calculateDuration(clips),
+              durationFrames: calculateDurationFrames(clips, get().settings.fps),
             };
           }),
 
@@ -991,7 +1163,7 @@ export const useVideoEditorStore = create<VideoEditorState>()(
               return {
                 clips,
                 crossTransitions: validateCrossTransitions(clips, state.crossTransitions),
-                duration: calculateDuration(clips),
+                durationFrames: calculateDurationFrames(clips, get().settings.fps),
               };
             }
 
@@ -1010,7 +1182,7 @@ export const useVideoEditorStore = create<VideoEditorState>()(
               return {
                 clips,
                 crossTransitions: validateCrossTransitions(clips, state.crossTransitions),
-                duration: calculateDuration(clips),
+                durationFrames: calculateDurationFrames(clips, get().settings.fps),
               };
             }
 
@@ -1030,7 +1202,7 @@ export const useVideoEditorStore = create<VideoEditorState>()(
             return {
               clips,
               crossTransitions: validateCrossTransitions(clips, state.crossTransitions),
-              duration: calculateDuration(clips),
+              durationFrames: calculateDurationFrames(clips, get().settings.fps),
             };
           }),
 
@@ -1101,7 +1273,7 @@ export const useVideoEditorStore = create<VideoEditorState>()(
             return {
               clips,
               crossTransitions: validateCrossTransitions(clips, state.crossTransitions),
-              duration: calculateDuration(clips),
+              durationFrames: calculateDurationFrames(clips, get().settings.fps),
             };
           }),
 
@@ -1123,7 +1295,7 @@ export const useVideoEditorStore = create<VideoEditorState>()(
             return {
               clips,
               crossTransitions: validateCrossTransitions(clips, state.crossTransitions),
-              duration: calculateDuration(clips),
+              durationFrames: calculateDurationFrames(clips, get().settings.fps),
             };
           }),
 
@@ -1146,7 +1318,7 @@ export const useVideoEditorStore = create<VideoEditorState>()(
             return {
               clips,
               crossTransitions: validateCrossTransitions(clips, state.crossTransitions),
-              duration: calculateDuration(clips),
+              durationFrames: calculateDurationFrames(clips, get().settings.fps),
             };
           }),
 
@@ -1193,7 +1365,7 @@ export const useVideoEditorStore = create<VideoEditorState>()(
             return {
               clips,
               crossTransitions: validateCrossTransitions(clips, state.crossTransitions),
-              duration: calculateDuration(clips),
+              durationFrames: calculateDurationFrames(clips, get().settings.fps),
             };
           }),
 
@@ -1221,7 +1393,7 @@ export const useVideoEditorStore = create<VideoEditorState>()(
 
             return {
               clips: sortClipsByStartTime(result.updatedClips),
-              duration: calculateDuration(result.updatedClips),
+              durationFrames: calculateDurationFrames(result.updatedClips, get().settings.fps),
             };
           }),
 
@@ -1279,7 +1451,7 @@ export const useVideoEditorStore = create<VideoEditorState>()(
           set((state) => ({
             clips: state.clips.map((clip) => {
               if (clip.id !== clipId || clip.type !== "audio") return clip;
-              const audioClip = clip as AudioClip;
+              const audioClip = clip;
               const currentEffects = audioClip.audioEffects ?? {};
               const currentEffect = currentEffects[effectType] ?? {};
               return {
@@ -1296,7 +1468,7 @@ export const useVideoEditorStore = create<VideoEditorState>()(
           set((state) => ({
             clips: state.clips.map((clip) => {
               if (clip.id !== clipId || clip.type !== "audio") return clip;
-              const audioClip = clip as AudioClip;
+              const audioClip = clip;
               const currentEffects = audioClip.audioEffects ?? {};
               if (enabled) {
                 // Enable with defaults (empty object = all defaults via serde)
@@ -1380,6 +1552,16 @@ export const useVideoEditorStore = create<VideoEditorState>()(
             clips: state.clips.map((clip) =>
               clip.id === clipId && clip.type === "line"
                 ? { ...clip, lineBox: { ...clip.lineBox, ...box } }
+                : clip,
+            ),
+          })),
+
+        // Color Grading actions
+        updateClipColorGrading: (clipId, colorGrading) =>
+          set((state) => ({
+            clips: state.clips.map((clip) =>
+              clip.id === clipId && (clip.type === "video" || clip.type === "image")
+                ? { ...clip, colorGrading }
                 : clip,
             ),
           })),
@@ -1644,8 +1826,8 @@ export const useVideoEditorStore = create<VideoEditorState>()(
             const outgoingEnd = outgoing.startTime + outgoing.duration;
             const gap = incoming.startTime - outgoingEnd;
 
-            // Only allow between adjacent clips (gap <= 0.1s)
-            if (gap > 0.1) return state;
+            // Only allow between adjacent clips (gap <= 1 frame)
+            if (gap > 1) return state;
 
             // Boundary is the original cut point (where outgoing ends).
             // Any gap is closed by shifting incoming left.

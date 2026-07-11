@@ -1,34 +1,55 @@
-import { Button } from "../ui/button";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
-import { useVideoEditorStore } from "../../state/video-editor-store";
+import { type FrameRate } from "@tooscut/render-engine";
 import { Play, Pause, SkipBack, SkipForward, ChevronsLeft, ChevronsRight } from "lucide-react";
 
-/**
- * Format time as HH:MM:SS.ms
- */
-function formatTimecode(seconds: number): string {
-  const hrs = Math.floor(seconds / 3600);
-  const mins = Math.floor((seconds % 3600) / 60);
-  const secs = Math.floor(seconds % 60);
-  const ms = Math.floor((seconds % 1) * 100);
+import { cn } from "@/lib/utils";
 
-  return `${hrs.toString().padStart(2, "0")}:${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}.${ms.toString().padStart(2, "0")}`;
+import { useVideoEditorStore } from "../../state/video-editor-store";
+import { Button } from "../ui/button";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
+
+/**
+ * Format a frame number as timecode HH:MM:SS:FF
+ */
+function formatTimecode(frame: number, fps: FrameRate): string {
+  const fpsFloat = fps.numerator / fps.denominator;
+  const totalSeconds = frame / fpsFloat;
+  const hrs = Math.floor(totalSeconds / 3600);
+  const mins = Math.floor((totalSeconds % 3600) / 60);
+  const secs = Math.floor(totalSeconds % 60);
+  const ff = Math.floor(frame % fpsFloat);
+
+  return `${hrs.toString().padStart(2, "0")}:${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}:${ff.toString().padStart(2, "0")}`;
 }
 
 export function PlaybackControls() {
-  const currentTime = useVideoEditorStore((s) => s.currentTime);
-  const duration = useVideoEditorStore((s) => s.duration);
+  const currentFrame = useVideoEditorStore((s) => s.currentFrame);
+  const durationFrames = useVideoEditorStore((s) => s.durationFrames);
   const isPlaying = useVideoEditorStore((s) => s.isPlaying);
+  const playbackSpeed = useVideoEditorStore((s) => s.playbackSpeed);
   const seekTo = useVideoEditorStore((s) => s.seekTo);
   const setIsPlaying = useVideoEditorStore((s) => s.setIsPlaying);
-
-  const frameTime = 1 / 30;
+  const setPlaybackSpeed = useVideoEditorStore((s) => s.setPlaybackSpeed);
+  const settings = useVideoEditorStore((s) => s.settings);
 
   const handleJumpToStart = () => seekTo(0);
-  const handleStepBackward = () => seekTo(Math.max(0, currentTime - frameTime));
-  const handlePlayPause = () => setIsPlaying(!isPlaying);
-  const handleStepForward = () => seekTo(Math.min(duration, currentTime + frameTime));
-  const handleJumpToEnd = () => seekTo(duration);
+  const handleStepBackward = () => seekTo(Math.max(0, currentFrame - 1));
+  const handlePlayPause = () => {
+    if (isPlaying) {
+      setIsPlaying(false);
+    } else {
+      setPlaybackSpeed(1);
+      setIsPlaying(true);
+    }
+  };
+  const handleStepForward = () => seekTo(Math.min(durationFrames, currentFrame + 1));
+  const handleJumpToEnd = () => seekTo(durationFrames);
+
+  // Format speed for display (e.g., "2x", "-4x", "REV")
+  const speedLabel =
+    playbackSpeed === 1 || !isPlaying ? null : `${playbackSpeed > 0 ? "" : ""}${playbackSpeed}x`;
+
+  // Reverse playback indicator
+  const isReverse = playbackSpeed < 0 && isPlaying;
 
   return (
     <TooltipProvider delayDuration={300}>
@@ -98,9 +119,36 @@ export function PlaybackControls() {
           </TooltipContent>
         </Tooltip>
 
+        {/* Speed indicator (shown when not 1x during playback) */}
+        {speedLabel && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div
+                className={cn(
+                  "ml-2 rounded px-2 py-0.5 font-mono text-sm font-medium",
+                  isReverse
+                    ? "bg-yellow-500/20 text-yellow-600 dark:text-yellow-400"
+                    : "bg-primary/20 text-primary",
+                )}
+              >
+                {speedLabel}
+              </div>
+            </TooltipTrigger>
+            <TooltipContent>
+              <p>
+                {isReverse
+                  ? "Reverse playback (no audio, may be slow)"
+                  : `Playback speed: ${playbackSpeed}x`}
+              </p>
+              <p className="text-xs text-muted-foreground">L = faster, J = reverse, K = pause</p>
+            </TooltipContent>
+          </Tooltip>
+        )}
+
         {/* Time display */}
         <div className="ml-4 font-mono text-sm text-muted-foreground">
-          {formatTimecode(currentTime)} / {formatTimecode(duration)}
+          {formatTimecode(currentFrame, settings.fps)} /{" "}
+          {formatTimecode(durationFrames, settings.fps)}
         </div>
       </div>
     </TooltipProvider>

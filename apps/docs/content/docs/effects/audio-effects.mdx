@@ -1,0 +1,61 @@
+---
+title: Audio Effects
+description: Apply EQ, compression, noise gate, and reverb to audio clips in Tooscut.
+---
+
+Real-time audio processing per clip. Each effect toggles independently and all parameters support [keyframes](/docs/animation/keyframing).
+
+Select an audio clip and open the **Audio** tab in the properties panel.
+
+## Equalizer (3-band EQ)
+
+| Band            | Default Frequency | Range         |
+| --------------- | ----------------- | ------------- |
+| **Low shelf**   | 200 Hz            | -24 to +24 dB |
+| **Mid peaking** | 1000 Hz           | -24 to +24 dB |
+| **High shelf**  | 5000 Hz           | -24 to +24 dB |
+
+Includes a visual frequency response display. Boost low shelf for warmth, cut high shelf for sibilance, adjust mid for presence.
+
+## Compressor
+
+Reduces dynamic range — makes loud parts quieter so you can raise the overall level.
+
+| Parameter       | Range         | Default | Description                                       |
+| --------------- | ------------- | ------- | ------------------------------------------------- |
+| **Threshold**   | -60 to 0 dB   | -20 dB  | Level above which compression kicks in            |
+| **Ratio**       | 1:1 to 20:1   | 4:1     | How aggressively to reduce signal above threshold |
+| **Attack**      | 0.1 to 200 ms | 10 ms   | How fast the compressor reacts                    |
+| **Release**     | 10 to 2000 ms | 100 ms  | How fast the compressor lets go                   |
+| **Makeup gain** | 0 to 24 dB    | 0 dB    | Boost to compensate for volume reduction          |
+
+Starting point for voice: threshold -20 dB, ratio 3:1-4:1, attack 10 ms, release 100 ms.
+
+## Noise Gate
+
+Silences audio below a threshold — cuts background noise between speech.
+
+| Parameter     | Range       | Description                                           |
+| ------------- | ----------- | ----------------------------------------------------- |
+| **Threshold** | -80 to 0 dB | Level below which audio is silenced                   |
+| **Attack**    | ms          | How fast the gate opens when signal exceeds threshold |
+| **Release**   | ms          | How fast the gate closes when signal drops below      |
+
+Set threshold just above your noise floor. Short attack to avoid clipping speech, moderate release to avoid chop.
+
+## Reverb
+
+Simulates room reflections.
+
+| Parameter        | Range  | Description                                      |
+| ---------------- | ------ | ------------------------------------------------ |
+| **Room size**    | 0 to 1 | Size of the simulated space                      |
+| **Damping**      | 0 to 1 | High-frequency absorption (higher = deader room) |
+| **Stereo width** | 0 to 1 | Spatial spread of the reverb                     |
+| **Dry/Wet**      | 0 to 1 | Mix between original (0) and reverb (1)          |
+
+Subtle ambience: dry/wet below 0.2. Dramatic: push higher.
+
+## Combining effects
+
+Multiple effects on one clip process in series: EQ -> compressor -> noise gate -> reverb. Typical voice chain: EQ for tone, compressor for dynamics, gate for silence cleanup.

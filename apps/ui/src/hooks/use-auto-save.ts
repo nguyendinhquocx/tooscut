@@ -1,9 +1,10 @@
-import { useEffect, useRef } from "react";
 import { EvaluatorManager } from "@tooscut/render-engine";
-import { useVideoEditorStore } from "../state/video-editor-store";
-import { db } from "../state/db";
-import { getSharedCompositor } from "../workers/compositor-api";
+import { useEffect, useRef } from "react";
+
 import { buildLayersForTime } from "../lib/layer-builder";
+import { db } from "../state/db";
+import { useVideoEditorStore } from "../state/video-editor-store";
+import { getSharedCompositor } from "../workers/compositor-api";
 
 function saveProject(projectId: string) {
   const { clips, tracks, crossTransitions, assets, settings } = useVideoEditorStore.getState();
@@ -33,7 +34,13 @@ async function generateThumbnail(projectId: string): Promise<void> {
   const compositor = getSharedCompositor();
   if (!compositor?.isReady) return;
 
-  const { clips, tracks, crossTransitions, settings, currentTime } = useVideoEditorStore.getState();
+  const {
+    clips,
+    tracks,
+    crossTransitions,
+    settings,
+    currentFrame: currentTime,
+  } = useVideoEditorStore.getState();
 
   // Nothing to render if there are no clips
   if (clips.length === 0) return;

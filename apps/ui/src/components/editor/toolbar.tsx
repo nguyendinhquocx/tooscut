@@ -1,10 +1,23 @@
-import { useState, useCallback, useRef, useEffect } from "react";
 import { useNavigate } from "@tanstack/react-router";
+import { Link } from "@tanstack/react-router";
 import { useLiveQuery } from "dexie-react-hooks";
-import { db } from "../../state/db";
+import {
+  Undo2,
+  Redo2,
+  MousePointer2,
+  Scissors,
+  DownloadIcon,
+  ChevronLeft,
+  Keyboard,
+  BookIcon,
+} from "lucide-react";
+import { useState, useCallback, useRef, useEffect } from "react";
+
 import { Route } from "../../routes/editor/$projectId";
+import { db } from "../../state/db";
+import { useVideoEditorStore, useTemporalStore } from "../../state/video-editor-store";
+import { importFilesWithPicker, addAssetsToStores } from "../timeline/use-asset-store";
 import { Button } from "../ui/button";
-import { Separator } from "../ui/separator";
 import {
   Menubar,
   MenubarContent,
@@ -14,19 +27,48 @@ import {
   MenubarShortcut,
   MenubarTrigger,
 } from "../ui/menubar";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
+import { Separator } from "../ui/separator";
 import { Toggle } from "../ui/toggle";
-import { Undo2, Redo2, MousePointer2, Scissors, DownloadIcon, ChevronLeft } from "lucide-react";
-import { Link } from "@tanstack/react-router";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
 import { ExportDialog } from "./export-dialog";
+import { openKeyboardShortcuts } from "./keyboard-shortcuts-modal";
 import { ProjectSettingsDialog } from "./project-settings-dialog";
-import { useVideoEditorStore, useTemporalStore } from "../../state/video-editor-store";
-import { importFilesWithPicker, addAssetsToStores } from "../timeline/use-asset-store";
 
-export function Toolbar() {
-  const [exportDialogOpen, setExportDialogOpen] = useState(false);
+interface ToolbarProps {
+  /** Open the settings dialog on mount (for new projects) */
+  showSettingsOnMount?: boolean;
+}
+
+export function Toolbar({ showSettingsOnMount }: ToolbarProps) {
+  const { projectId } = Route.useParams();
+  const exportDialogOpen = useVideoEditorStore((s) => s.exportDialogOpen);
+  const setExportDialogOpen = useVideoEditorStore((s) => s.setExportDialogOpen);
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
+
   const navigate = useNavigate();
+
+  // Auto-open settings dialog for new projects
+  useEffect(() => {
+    if (showSettingsOnMount) {
+      setSettingsDialogOpen(true);
+    }
+  }, [showSettingsOnMount]);
+
+  const handleSettingsDialogChange = useCallback(
+    (open: boolean) => {
+      setSettingsDialogOpen(open);
+      // Clear the "new" search param when closing
+      if (!open && showSettingsOnMount) {
+        void navigate({
+          to: "/editor/$projectId",
+          params: { projectId },
+          search: {} as any, // eslint-disable-line @typescript-eslint/no-unsafe-assignment
+          replace: true,
+        });
+      }
+    },
+    [showSettingsOnMount, navigate, projectId],
+  );
   const activeTool = useVideoEditorStore((s) => s.activeTool);
   const setActiveTool = useVideoEditorStore((s) => s.setActiveTool);
   const clips = useVideoEditorStore((s) => s.clips);
@@ -43,6 +85,8 @@ export function Toolbar() {
   const setClipTransitionOut = useVideoEditorStore((s) => s.setClipTransitionOut);
   const clipboard = useVideoEditorStore((s) => s.clipboard);
   const copySelectedClips = useVideoEditorStore((s) => s.copySelectedClips);
+  const cutSelectedClips = useVideoEditorStore((s) => s.cutSelectedClips);
+  const duplicateSelectedClips = useVideoEditorStore((s) => s.duplicateSelectedClips);
   const pasteClipsAtPlayhead = useVideoEditorStore((s) => s.pasteClipsAtPlayhead);
   const undo = useTemporalStore((s) => s.undo);
   const redo = useTemporalStore((s) => s.redo);
@@ -54,7 +98,7 @@ export function Toolbar() {
 
   const handleExportClick = useCallback(() => {
     setExportDialogOpen(true);
-  }, []);
+  }, [setExportDialogOpen]);
 
   const handleDeleteSelected = useCallback(() => {
     if (selectedCrossTransition) {
@@ -97,7 +141,7 @@ export function Toolbar() {
   ]);
   return (
     <TooltipProvider delayDuration={300}>
-      <div className="flex items-center gap-1 px-2 py-1 bg-card border-b border-border">
+      <div className="flex items-center gap-1 border-b border-border bg-card px-2 py-1">
         <Tooltip>
           <TooltipTrigger asChild>
             <Button variant="ghost" size="icon" className="h-7 w-7" asChild>
@@ -114,17 +158,17 @@ export function Toolbar() {
         <Separator orientation="vertical" className="mx-1 h-5" />
 
         {/* File/Edit/View menus */}
-        <Menubar className="border-none shadow-none bg-transparent h-auto p-0">
+        <Menubar className="h-auto border-none bg-transparent p-0 shadow-none">
           <MenubarMenu>
-            <MenubarTrigger className="text-xs h-7 px-2 py-1 data-[state=open]:bg-accent">
+            <MenubarTrigger className="h-7 px-2 py-1 text-xs data-[state=open]:bg-accent">
               File
             </MenubarTrigger>
             <MenubarContent>
-              <MenubarItem onClick={() => navigate({ to: "/projects" })}>
+              <MenubarItem onClick={() => void navigate({ to: "/projects" })}>
                 New Project
                 <MenubarShortcut>⌘N</MenubarShortcut>
               </MenubarItem>
-              <MenubarItem onClick={() => navigate({ to: "/projects" })}>
+              <MenubarItem onClick={() => void navigate({ to: "/projects" })}>
                 Open Project
                 <MenubarShortcut>⌘O</MenubarShortcut>
               </MenubarItem>
@@ -136,9 +180,11 @@ export function Toolbar() {
               <MenubarItem disabled>Save As...</MenubarItem>
               <MenubarSeparator />
               <MenubarItem
-                onClick={async () => {
-                  const assets = await importFilesWithPicker();
-                  if (assets.length > 0) addAssetsToStores(assets);
+                onClick={() => {
+                  void (async () => {
+                    const assets = await importFilesWithPicker();
+                    if (assets.length > 0) addAssetsToStores(assets);
+                  })();
                 }}
               >
                 Import Media
@@ -156,7 +202,7 @@ export function Toolbar() {
           </MenubarMenu>
 
           <MenubarMenu>
-            <MenubarTrigger className="text-xs h-7 px-2 py-1 data-[state=open]:bg-accent">
+            <MenubarTrigger className="h-7 px-2 py-1 text-xs data-[state=open]:bg-accent">
               Edit
             </MenubarTrigger>
             <MenubarContent>
@@ -169,7 +215,7 @@ export function Toolbar() {
                 <MenubarShortcut>⇧⌘Z</MenubarShortcut>
               </MenubarItem>
               <MenubarSeparator />
-              <MenubarItem disabled>
+              <MenubarItem disabled={selectedClipIds.length === 0} onClick={cutSelectedClips}>
                 Cut
                 <MenubarShortcut>⌘X</MenubarShortcut>
               </MenubarItem>
@@ -180,6 +226,10 @@ export function Toolbar() {
               <MenubarItem disabled={clipboard.length === 0} onClick={pasteClipsAtPlayhead}>
                 Paste
                 <MenubarShortcut>⌘V</MenubarShortcut>
+              </MenubarItem>
+              <MenubarItem disabled={selectedClipIds.length === 0} onClick={duplicateSelectedClips}>
+                Duplicate
+                <MenubarShortcut>⌘D</MenubarShortcut>
               </MenubarItem>
               <MenubarItem disabled={!hasSelection} onClick={handleDeleteSelected}>
                 Delete
@@ -200,7 +250,7 @@ export function Toolbar() {
           </MenubarMenu>
 
           <MenubarMenu>
-            <MenubarTrigger className="text-xs h-7 px-2 py-1 data-[state=open]:bg-accent">
+            <MenubarTrigger className="h-7 px-2 py-1 text-xs data-[state=open]:bg-accent">
               View
             </MenubarTrigger>
             <MenubarContent>
@@ -211,6 +261,26 @@ export function Toolbar() {
               <MenubarItem disabled>Show Timeline</MenubarItem>
               <MenubarItem disabled>Show Properties</MenubarItem>
               <MenubarItem disabled>Show Assets</MenubarItem>
+            </MenubarContent>
+          </MenubarMenu>
+
+          <MenubarMenu>
+            <MenubarTrigger className="h-7 px-2 py-1 text-xs data-[state=open]:bg-accent">
+              Help
+            </MenubarTrigger>
+            <MenubarContent>
+              <MenubarItem onClick={openKeyboardShortcuts}>
+                <Keyboard className="mr-2 h-4 w-4" />
+                Keyboard Shortcuts
+                <MenubarShortcut>?</MenubarShortcut>
+              </MenubarItem>
+              <MenubarSeparator />
+              <MenubarItem asChild>
+                <a href="https://docs.tooscut.app" target="_blank" rel="noopener">
+                  <BookIcon className="mr-2 h-4 w-4" />
+                  Documentation
+                </a>
+              </MenubarItem>
             </MenubarContent>
           </MenubarMenu>
         </Menubar>
@@ -293,11 +363,18 @@ export function Toolbar() {
 
         <div className="flex-1" />
 
+        {/* Docs link */}
+        <Button variant="ghost" size="sm" className="h-7 text-xs" asChild>
+          <a href="https://docs.tooscut.app" target="_blank" rel="noopener">
+            Docs
+          </a>
+        </Button>
+
         {/* Export button */}
         <Tooltip>
           <TooltipTrigger asChild>
-            <Button variant="default" size="sm" className="text-xs h-7" onClick={handleExportClick}>
-              <DownloadIcon className="h-4 w-4 mr-1" />
+            <Button variant="default" size="sm" className="h-7 text-xs" onClick={handleExportClick}>
+              <DownloadIcon className="mr-1 h-4 w-4" />
               Export
             </Button>
           </TooltipTrigger>
@@ -308,7 +385,11 @@ export function Toolbar() {
 
         {/* Dialogs */}
         <ExportDialog open={exportDialogOpen} onOpenChange={setExportDialogOpen} />
-        <ProjectSettingsDialog open={settingsDialogOpen} onOpenChange={setSettingsDialogOpen} />
+        <ProjectSettingsDialog
+          open={settingsDialogOpen}
+          onOpenChange={handleSettingsDialogChange}
+          projectId={projectId}
+        />
       </div>
     </TooltipProvider>
   );
@@ -341,7 +422,7 @@ function ToolbarProjectName() {
     return (
       <input
         ref={inputRef}
-        className="text-xs text-foreground bg-transparent border-b border-ring outline-none w-40"
+        className="w-40 border-b border-ring bg-transparent text-xs text-foreground outline-none"
         value={value}
         onChange={(e) => setValue(e.target.value)}
         onBlur={commit}
@@ -356,7 +437,7 @@ function ToolbarProjectName() {
   return (
     <button
       type="button"
-      className="text-xs text-muted-foreground hover:text-foreground transition-colors truncate max-w-48 cursor-text"
+      className="max-w-48 cursor-text truncate text-xs text-muted-foreground transition-colors hover:text-foreground"
       onClick={() => {
         setValue(project.name);
         setEditing(true);

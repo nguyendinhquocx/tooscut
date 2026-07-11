@@ -1,0 +1,47 @@
+---
+title: Color Grading Overview
+description: Understand the node-based color grading pipeline in Tooscut.
+---
+
+Node-based color grading pipeline, runs entirely on the GPU. Each clip has its own grading graph. All nodes compile into a single fragment shader — no performance penalty for stacking corrections.
+
+## Accessing color grading
+
+Select a video or image clip, then open the **Color** tab in the properties panel.
+
+## The node graph
+
+Nodes form a chain, processing left to right. Nodes can be:
+
+- **Added** to the graph
+- **Reordered** by dragging
+- **Enabled/disabled** individually
+- **Mixed** (0–100%) to blend correction with the original
+
+## Processing
+
+Pipeline works in linear color space. Input footage converts from its source color space to linear, passes through the node chain, then gets tone-mapped to the display gamut on output.
+
+## Node types
+
+| Node                         | Purpose                                              | Details                                                                        |
+| ---------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------ |
+| **Primary Correction (CDL)** | Slope, offset, power — foundation of any grade       | [Color Wheels & CDL](/docs/color-grading/color-wheels-and-cdl)                 |
+| **Color Wheels**             | Lift, gamma, gain with interactive polar wheels      | [Color Wheels & CDL](/docs/color-grading/color-wheels-and-cdl)                 |
+| **Curves**                   | Per-channel RGB curves and hue/sat/lum curves        | [Curves & LUTs](/docs/color-grading/curves-and-luts)                           |
+| **LUT**                      | Apply a 3D look-up table from a .cube file           | [Curves & LUTs](/docs/color-grading/curves-and-luts)                           |
+| **Qualifier**                | Isolate pixels by hue, saturation, or luminance      | [Qualifiers & Power Windows](/docs/color-grading/qualifiers-and-power-windows) |
+| **Power Window**             | Mask a frame region for localized grading            | [Qualifiers & Power Windows](/docs/color-grading/qualifiers-and-power-windows) |
+| **Color Space Transform**    | Convert between professional color spaces and gamuts | [Qualifiers & Power Windows](/docs/color-grading/qualifiers-and-power-windows) |
+
+## Typical workflow
+
+1. **Primary Correction** — set exposure, white balance, contrast.
+2. **Color Wheels** — shadow/midtone/highlight color balance.
+3. **Curves** — fine per-channel adjustments.
+4. **LUT** — creative look.
+5. **Qualifier** or **Power Window** — targeted corrections (sky, skin tones, etc.).
+
+## Keyframing
+
+Every color grading parameter supports [keyframes](/docs/animation/keyframing) for animating grades over time.

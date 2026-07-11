@@ -7,22 +7,26 @@
     "dev": "turbo dev",
     "build": "turbo build",
     "build:wasm": "cd crates && ./build.sh",
-    "lint": "oxlint --type-aware",
+    "lint": "oxlint --type-aware -D correctness",
     "lint:fix": "oxlint --type-aware --fix",
-    "format": "oxfmt --write apps packages",
-    "format:check": "oxfmt --check apps packages --no-error-on-unmatched-pattern",
+    "format:fix": "oxfmt --write apps packages",
+    "format": "oxfmt --check apps packages --no-error-on-unmatched-pattern",
     "typecheck": "turbo typecheck",
     "test": "turbo test",
-    "clean": "turbo clean && rm -rf node_modules"
+    "clean": "turbo clean && rm -rf node_modules",
+    "knip": "knip",
+    "screenshots": "node scripts/take-doc-screenshots.mjs"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "packageManager": "pnpm@10.19.0",
   "devDependencies": {
-    "oxfmt": "^0.27.0",
-    "oxlint": "^1.1.0",
-    "oxlint-tsgolint": "^0.11.4",
+    "knip": "^6.1.0",
+    "oxfmt": "catalog:",
+    "oxlint": "catalog:",
+    "oxlint-tsgolint": "catalog:",
+    "playwright": "^1.58.1",
     "turbo": "^2.5.0"
   }
 }

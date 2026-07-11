@@ -11,6 +11,7 @@
  */
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+
 import {
   SnapshotTester,
   ellipse,
@@ -46,7 +47,6 @@ describe("complex compositions (1920x1080)", () => {
   });
 
   afterEach(async () => {
-    // Capture screenshot after each test for visual verification
     await tester.captureScreenshot();
   });
 

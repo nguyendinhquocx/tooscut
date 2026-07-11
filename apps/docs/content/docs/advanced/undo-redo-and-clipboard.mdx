@@ -1,0 +1,30 @@
+---
+title: Undo, Redo, and Clipboard
+description: Undo mistakes, redo changes, and use copy/paste to speed up your editing.
+---
+
+## Undo and redo
+
+| Action   | Shortcut       |
+| -------- | -------------- |
+| **Undo** | <kbd>⌘Z</kbd>  |
+| **Redo** | <kbd>⌘⇧Z</kbd> |
+
+Up to 100 states in history. Every timeline operation is undoable: moves, splits, trims, effect changes, color grading, keyframe edits, transitions, track additions/removals.
+
+### Continuous interactions
+
+Dragging a slider, moving a clip, or adjusting a color wheel records only the final result (on mouse release) as a single undo step — intermediate states are not tracked.
+
+## Clipboard
+
+| Action        | Shortcut      | Effect                                                    |
+| ------------- | ------------- | --------------------------------------------------------- |
+| **Cut**       | <kbd>⌘X</kbd> | Remove selected clips, place on clipboard                 |
+| **Copy**      | <kbd>⌘C</kbd> | Copy selected clips to clipboard                          |
+| **Paste**     | <kbd>⌘V</kbd> | Insert clipboard contents at playhead position            |
+| **Duplicate** | <kbd>⌘D</kbd> | Copy + paste in place (duplicates appear after originals) |
+
+Pasted clips land at the playhead on the same track(s) as the originals. Linked clips are pasted together.
+
+On Windows and Linux, replace <kbd>⌘</kbd> with <kbd>Ctrl</kbd>.

@@ -1,0 +1,36 @@
+---
+title: Easing and Curves
+description: Control the timing of animations with easing presets and custom curves.
+---
+
+## Easing presets
+
+Each keyframe has an easing setting that controls the transition to the next keyframe:
+
+| Preset          | Behavior                              |
+| --------------- | ------------------------------------- |
+| **Linear**      | Constant speed from start to end      |
+| **Ease In**     | Starts slow, accelerates              |
+| **Ease Out**    | Starts fast, decelerates              |
+| **Ease In Out** | Slow at both ends, fast in the middle |
+| **Custom**      | Define your own cubic Bezier curve    |
+
+## Interpolation types
+
+| Type       | Behavior                                          |
+| ---------- | ------------------------------------------------- |
+| **Linear** | Smooth transition between values                  |
+| **Step**   | Jumps instantly to the next value (no transition) |
+| **Bezier** | Custom cubic Bezier curve for fine control        |
+
+Step interpolation snaps between values with no transition — good for on/off effects like opacity.
+
+## Custom Bezier curves
+
+Choose **Custom** easing to open a Bezier curve editor. Drag the two control handles to shape the timing curve (horizontal = time, vertical = value). Same model as CSS `cubic-bezier()` — supports bounces, overshoots, etc.
+
+## Examples
+
+- **Fade in a title** — Opacity 0 to 1, **Ease Out**.
+- **Slide a shape** — Animate x with **Ease In Out**.
+- **Hard cut between colors** — **Step** interpolation, no blend.

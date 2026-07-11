@@ -64,47 +64,66 @@ impl AudioEngine {
         self.mixer.remove_audio(source_id);
     }
 
-    /// Create a streaming audio source that receives PCM data incrementally
+    /// Create a windowed audio source (metadata only, fixed-size buffer)
+    ///
+    /// Unlike streaming sources, windowed sources only retain a limited amount
+    /// of decoded PCM in memory. The JS side manages decode-ahead and sends
+    /// buffer updates as the playhead moves.
     ///
     /// # Arguments
     /// * `source_id` - Unique identifier for this audio source (asset ID)
     /// * `sample_rate` - Sample rate of the source audio
     /// * `channels` - Number of channels (1 or 2)
-    /// * `estimated_duration` - Optional duration hint in seconds for pre-allocation (0 = no hint)
+    /// * `duration` - Total duration of the source media in seconds
+    /// * `max_buffer_seconds` - Maximum seconds of PCM to retain (e.g. 30.0)
     #[wasm_bindgen]
-    pub fn create_streaming_source(
+    pub fn create_windowed_source(
         &mut self,
         source_id: &str,
         sample_rate: u32,
         channels: u32,
-        estimated_duration: f64,
+        duration: f64,
+        max_buffer_seconds: f64,
     ) {
-        let duration_hint = if estimated_duration > 0.0 {
-            Some(estimated_duration)
-        } else {
-            None
-        };
-        self.mixer
-            .create_streaming_source(source_id, sample_rate, channels, duration_hint);
+        self.mixer.create_windowed_source(
+            source_id,
+            sample_rate,
+            channels,
+            duration,
+            max_buffer_seconds,
+        );
     }
 
-    /// Append a chunk of interleaved PCM data to a streaming source
+    /// Update the buffered PCM window for a windowed source
     ///
     /// # Arguments
-    /// * `source_id` - ID of the streaming source (must have been created with `create_streaming_source`)
-    /// * `chunk` - Interleaved PCM data (f32)
+    /// * `source_id` - ID of the windowed source
+    /// * `start_time` - Start time in source-time seconds for this chunk
+    /// * `pcm_data` - Interleaved PCM data (f32)
     #[wasm_bindgen]
-    pub fn append_audio_chunk(&mut self, source_id: &str, chunk: &[f32]) {
-        self.mixer.append_audio_chunk(source_id, chunk);
+    pub fn update_source_buffer(&mut self, source_id: &str, start_time: f64, pcm_data: &[f32]) {
+        self.mixer.update_source_buffer(source_id, start_time, pcm_data);
     }
 
-    /// Mark a streaming source as complete (all data has been received)
-    ///
-    /// # Arguments
-    /// * `source_id` - ID of the streaming source
+    /// Clear all buffered data for a windowed source (used on seek)
     #[wasm_bindgen]
-    pub fn finalize_audio(&mut self, source_id: &str) {
-        self.mixer.finalize_audio(source_id);
+    pub fn clear_source_buffer(&mut self, source_id: &str) {
+        self.mixer.clear_source_buffer(source_id);
+    }
+
+    /// Update the sample rate for a source
+    ///
+    /// Used when the actual decoded sample rate differs from the container metadata
+    /// (e.g. HE-AAC files where probe reports 44100 but decoder outputs 48000).
+    #[wasm_bindgen]
+    pub fn update_source_sample_rate(&mut self, source_id: &str, sample_rate: u32) {
+        self.mixer.update_source_sample_rate(source_id, sample_rate);
+    }
+
+    /// Get buffer misses since last query (diagnostics)
+    #[wasm_bindgen]
+    pub fn get_buffer_misses(&mut self, source_id: &str) -> u64 {
+        self.mixer.get_buffer_misses(source_id)
     }
 
     /// Update the timeline state (clips, tracks, cross-transitions)
@@ -156,5 +175,16 @@ impl AudioEngine {
     #[wasm_bindgen]
     pub fn set_master_volume(&mut self, volume: f32) {
         self.mixer.set_master_volume(volume);
+    }
+
+    /// Set global playback rate
+    ///
+    /// # Arguments
+    /// * `rate` - Playback rate multiplier (1.0 = normal, 2.0 = 2x, -1.0 = reverse)
+    ///
+    /// Note: Reverse playback outputs silence as audio cannot play backwards.
+    #[wasm_bindgen]
+    pub fn set_playback_rate(&mut self, rate: f64) {
+        self.mixer.set_playback_rate(rate);
     }
 }

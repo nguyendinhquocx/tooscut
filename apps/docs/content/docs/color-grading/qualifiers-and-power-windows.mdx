@@ -1,0 +1,84 @@
+---
+title: Qualifiers and Power Windows
+description: Isolate specific colors or regions for targeted grading in Tooscut.
+---
+
+Target corrections to specific colors (qualifiers) or frame regions (power windows).
+
+## Qualifier
+
+Select pixels by hue, saturation, and luminance. Only selected pixels are affected by downstream nodes.
+
+### HSL range controls
+
+| Parameter             | Description                    |
+| --------------------- | ------------------------------ |
+| **Hue center**        | Target hue on the color wheel  |
+| **Hue width**         | Range of hues to include       |
+| **Saturation center** | Target saturation level        |
+| **Saturation width**  | Range of saturation to include |
+| **Luminance center**  | Target brightness level        |
+| **Luminance width**   | Range of brightness to include |
+
+Each parameter has a **softness** control that feathers the selection edge.
+
+### Invert
+
+Toggle **Invert** to affect everything _except_ the selected range. Example: select skin tones and invert to desaturate the background while keeping skin natural.
+
+### Example: isolating sky
+
+1. Add a **Qualifier** node.
+2. Set hue center to blue (~210deg).
+3. Set moderate hue width to capture sky blue range.
+4. Narrow saturation range to exclude desaturated blues (grey buildings).
+5. Add a correction node after the qualifier to deepen the sky.
+
+## Power Window
+
+Geometric mask on the frame. Only pixels inside (or outside) the window are affected by subsequent nodes.
+
+### Shapes
+
+| Shape         | Description          |
+| ------------- | -------------------- |
+| **Circle**    | Elliptical mask      |
+| **Rectangle** | Rectangular mask     |
+| **Gradient**  | Linear gradient mask |
+| **Polygon**   | Custom polygon shape |
+
+### Controls
+
+| Parameter        | Description                       |
+| ---------------- | --------------------------------- |
+| **Center X / Y** | Position                          |
+| **Scale X / Y**  | Size                              |
+| **Rotation**     | Angle                             |
+| **Softness**     | Edge feathering (inner and outer) |
+| **Invert**       | Affect the area outside instead   |
+
+All parameters support [keyframes](/docs/animation/keyframing) for tracking moving subjects.
+
+## Combining qualifiers and power windows
+
+Stack both on the same clip:
+
+1. **Power Window** to isolate a face.
+2. **Qualifier** within that region to select skin tones only.
+3. Correction node applies only to skin, only within the window.
+
+## Color Space Transform
+
+Convert between professional color spaces and gamuts.
+
+### Settings
+
+| Setting                | Options                                                                                                                           |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| **Input color space**  | sRGB, Linear, ACEScg, Log C, S-Log2, S-Log3, C-Log3, V-Log, BMD Film, RedLog3G10                                                  |
+| **Output color space** | Same options as input                                                                                                             |
+| **Input gamut**        | Rec.709, S-Gamut, S-Gamut3, S-Gamut3.Cine, ARRI Wide Gamut, ACEScg AP1, RED Wide Gamut, DCI-P3, Rec.2020, V-Gamut, BMD Wide Gamut |
+| **Output gamut**       | Same options as input                                                                                                             |
+| **Tone mapping**       | None, Simple                                                                                                                      |
+
+Typical use: convert ARRI Log C / ARRI Wide Gamut to Linear / Rec.709 at the start of the node chain, grade in a known space, then let output tone mapping handle display conversion.

@@ -1,16 +1,19 @@
-import { useMemo, useCallback, useEffect } from "react";
+import type { Effects, TextStyle, TextBox } from "@tooscut/render-engine";
+
 import { Loader2, Italic, AlignLeft, AlignCenter, AlignRight } from "lucide-react";
-import { NumericInput } from "../ui/numeric-input";
+import { useMemo, useCallback, useEffect } from "react";
+
+import type { TextClip } from "../../state/video-editor-store";
+
+import { getWeightName, findNearestWeight } from "../../lib/font-service";
+import { useFontStore } from "../../state/font-store";
 import { ColorInput } from "../ui/color-input";
+import { NumericInput } from "../ui/numeric-input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { Textarea } from "../ui/textarea";
 import { Toggle } from "../ui/toggle";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
-import { useFontStore } from "../../state/font-store";
-import { getWeightName, findNearestWeight } from "../../lib/font-service";
 import { FontPicker } from "./font-picker";
 import { PropertySection, PropertyRow } from "./property-shared";
-import type { TextClip } from "../../state/video-editor-store";
-import type { Effects, TextStyle, TextBox } from "@tooscut/render-engine";
 
 interface TextPropertiesProps {
   clip: TextClip;
@@ -45,8 +48,15 @@ export function TextProperties({
   }, [catalog, fontFamily]);
 
   // Available weights for current font (default to [400, 700] if not in catalog)
-  const availableWeights = fontEntry?.weights ?? [400, 700];
+  const availableWeights = useMemo(() => fontEntry?.weights ?? [400, 700], [fontEntry]);
   const supportsItalic = fontEntry?.styles.includes("italic") ?? false;
+
+  const availableWeightsItems = useMemo(() => {
+    return availableWeights.map((w) => ({
+      value: String(w),
+      label: getWeightName(w),
+    }));
+  }, [availableWeights]);
 
   // Compute the variant key for loading status
   const currentWeight = fontEntry ? findNearestWeight(fontEntry.weights, fontWeight) : fontWeight;
@@ -140,14 +150,15 @@ export function TextProperties({
             <Select
               value={String(style.font_weight)}
               onValueChange={(v) => onUpdateStyle(clip.id, { font_weight: Number(v) })}
+              items={availableWeightsItems}
             >
               <SelectTrigger size="sm" className="w-28">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {availableWeights.map((w) => (
-                  <SelectItem key={w} value={String(w)}>
-                    {getWeightName(w)}
+                {availableWeightsItems.map((item) => (
+                  <SelectItem key={item.value} value={item.value}>
+                    {item.label}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -253,6 +264,66 @@ export function TextProperties({
             max={100}
           />
         </PropertyRow>
+      </PropertySection>
+
+      <PropertySection title="Background">
+        <PropertyRow label="Enabled">
+          <Toggle
+            variant="outline"
+            size="sm"
+            pressed={style.background_color != null}
+            onPressedChange={(pressed) => {
+              if (pressed) {
+                onUpdateStyle(clip.id, {
+                  background_color: [0, 0, 0, 0.7],
+                  background_padding: 16,
+                  background_border_radius: 4,
+                });
+              } else {
+                onUpdateStyle(clip.id, {
+                  background_color: undefined,
+                  background_padding: undefined,
+                  background_border_radius: undefined,
+                });
+              }
+            }}
+          >
+            {style.background_color != null ? "On" : "Off"}
+          </Toggle>
+        </PropertyRow>
+        {style.background_color != null && (
+          <>
+            <PropertyRow label="Color">
+              <ColorInput
+                value={style.background_color}
+                onChange={(color) => onUpdateStyle(clip.id, { background_color: color })}
+                showAlpha
+              />
+            </PropertyRow>
+            <PropertyRow label="Padding">
+              <NumericInput
+                value={style.background_padding ?? 0}
+                onChange={(v) => onUpdateStyle(clip.id, { background_padding: v })}
+                suffix="px"
+                precision={0}
+                step={1}
+                min={0}
+                max={100}
+              />
+            </PropertyRow>
+            <PropertyRow label="Radius">
+              <NumericInput
+                value={style.background_border_radius ?? 0}
+                onChange={(v) => onUpdateStyle(clip.id, { background_border_radius: v })}
+                suffix="px"
+                precision={0}
+                step={1}
+                min={0}
+                max={100}
+              />
+            </PropertyRow>
+          </>
+        )}
       </PropertySection>
 
       <PropertySection title="Opacity">

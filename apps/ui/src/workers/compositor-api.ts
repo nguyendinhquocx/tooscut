@@ -10,11 +10,13 @@
  * - No data copied back (rendering visible directly on canvas)
  */
 
-import * as Comlink from "comlink";
 import type { RenderFrame } from "@tooscut/render-engine";
+
+import * as Comlink from "comlink";
+
 import type { CompositorWorkerApi } from "./compositor.worker";
 
-export interface CompositorApiConfig {
+interface CompositorApiConfig {
   canvas: HTMLCanvasElement;
   width: number;
   height: number;
@@ -30,9 +32,9 @@ export interface CompositorApi {
   /** Check if a font is loaded */
   isFontLoaded(fontId: string): Promise<boolean>;
   /** Upload an ImageBitmap texture */
-  uploadBitmap(bitmap: ImageBitmap, textureId: string): void;
+  uploadBitmap(bitmap: ImageBitmap, textureId: string): Promise<void>;
   /** Render a frame */
-  renderFrame(frame: RenderFrame): void;
+  renderFrame(frame: RenderFrame): Promise<void>;
   /** Render a frame and return pixel data (RGBA) */
   renderToPixels(frame: RenderFrame): Promise<Uint8Array>;
   /** Render a frame and return a downscaled JPEG thumbnail as ArrayBuffer */
@@ -42,13 +44,17 @@ export interface CompositorApi {
     thumbHeight: number,
   ): Promise<ArrayBuffer>;
   /** Clear a specific texture */
-  clearTexture(textureId: string): void;
+  clearTexture(textureId: string): Promise<void>;
+  /** Upload a 3D LUT */
+  uploadLut(lutId: string, size: number, data: Float32Array): Promise<void>;
+  /** Remove the active LUT */
+  removeLut(): Promise<void>;
   /** Clear all textures */
-  clearAllTextures(): void;
+  clearAllTextures(): Promise<void>;
   /** Flush pending GPU operations */
-  flush(): void;
+  flush(): Promise<void>;
   /** Dispose the compositor and worker */
-  dispose(): void;
+  dispose(): Promise<void>;
   /** Whether the compositor is ready */
   isReady: boolean;
 }
@@ -119,18 +125,18 @@ export function createCompositorApi(config: CompositorApiConfig): CompositorApi 
       return api.isFontLoaded(fontId);
     },
 
-    uploadBitmap(bitmap: ImageBitmap, textureId: string) {
+    async uploadBitmap(bitmap: ImageBitmap, textureId: string) {
       if (!api || !isReady) {
         bitmap.close();
         return;
       }
       // Transfer bitmap to worker (zero-copy)
-      void api.uploadBitmap(Comlink.transfer(bitmap, [bitmap]), textureId);
+      await api.uploadBitmap(Comlink.transfer(bitmap, [bitmap]), textureId);
     },
 
-    renderFrame(frame: RenderFrame) {
+    async renderFrame(frame: RenderFrame) {
       if (!api || !isReady) return;
-      return api.renderFrame(frame);
+      await api.renderFrame(frame);
     },
 
     async renderToPixels(frame: RenderFrame): Promise<Uint8Array> {
@@ -147,24 +153,35 @@ export function createCompositorApi(config: CompositorApiConfig): CompositorApi 
       return api.captureThumbnail(frame, thumbWidth, thumbHeight);
     },
 
-    clearTexture(textureId: string) {
+    async uploadLut(lutId: string, size: number, data: Float32Array) {
       if (!api || !isReady) return;
-      return api.clearTexture(textureId);
+      // Transfer the float data to avoid copying
+      await api.uploadLut(lutId, size, Comlink.transfer(data, [data.buffer]));
     },
 
-    clearAllTextures() {
+    async removeLut() {
       if (!api || !isReady) return;
-      return api.clearAllTextures();
+      await api.removeLut();
     },
 
-    flush() {
+    async clearTexture(textureId: string) {
       if (!api || !isReady) return;
-      return api.flush();
+      await api.clearTexture(textureId);
     },
 
-    dispose() {
+    async clearAllTextures() {
+      if (!api || !isReady) return;
+      await api.clearAllTextures();
+    },
+
+    async flush() {
+      if (!api || !isReady) return;
+      await api.flush();
+    },
+
+    async dispose() {
       if (api) {
-        void api.dispose();
+        await api.dispose();
         api = null;
       }
       if (worker) {
@@ -190,75 +207,4 @@ export function setSharedCompositor(compositor: CompositorApi | null): void {
 
 export function getSharedCompositor(): CompositorApi | null {
   return sharedCompositor;
-}
-
-/**
- * Create ImageBitmaps from video elements for transfer to worker.
- * Uses createImageBitmap for optimal performance.
- */
-export async function createTexturesFromVideos(
-  videoElements: Map<string, HTMLVideoElement>,
-): Promise<Map<string, ImageBitmap>> {
-  const textures = new Map<string, ImageBitmap>();
-
-  const entries = Array.from(videoElements.entries());
-
-  // Create all bitmaps in parallel
-  const results = await Promise.allSettled(
-    entries.map(async ([textureId, video]) => {
-      // Skip if video not ready
-      if (video.readyState < 2 || video.videoWidth === 0) {
-        return { textureId, bitmap: null };
-      }
-
-      try {
-        const bitmap = await createImageBitmap(video);
-        return { textureId, bitmap };
-      } catch {
-        return { textureId, bitmap: null };
-      }
-    }),
-  );
-
-  for (const result of results) {
-    if (result.status === "fulfilled" && result.value.bitmap) {
-      textures.set(result.value.textureId, result.value.bitmap);
-    }
-  }
-
-  return textures;
-}
-
-/**
- * Create ImageBitmaps from image elements for transfer to worker.
- */
-export async function createTexturesFromImages(
-  imageElements: Map<string, HTMLImageElement>,
-): Promise<Map<string, ImageBitmap>> {
-  const textures = new Map<string, ImageBitmap>();
-
-  const entries = Array.from(imageElements.entries());
-
-  const results = await Promise.allSettled(
-    entries.map(async ([textureId, image]) => {
-      if (!image.complete || image.naturalWidth === 0) {
-        return { textureId, bitmap: null };
-      }
-
-      try {
-        const bitmap = await createImageBitmap(image);
-        return { textureId, bitmap };
-      } catch {
-        return { textureId, bitmap: null };
-      }
-    }),
-  );
-
-  for (const result of results) {
-    if (result.status === "fulfilled" && result.value.bitmap) {
-      textures.set(result.value.textureId, result.value.bitmap);
-    }
-  }
-
-  return textures;
 }

@@ -19,29 +19,36 @@ import type {
   TextLayerData,
   ShapeLayerData,
   LineLayerData,
+  ColorGrading,
 } from "./types.js";
-import { DEFAULT_TRANSFORM, DEFAULT_EFFECTS } from "./types.js";
+
 import { KeyframeEvaluator } from "./keyframe-evaluator.js";
+import { DEFAULT_TRANSFORM, DEFAULT_EFFECTS } from "./types.js";
 
 /**
  * Minimal clip interface for visibility checks.
+ * All time values are in integer frame counts relative to the project frame rate.
  */
 export interface ClipBounds {
   id: string;
+  /** Start position on the timeline in frames */
   startTime: number;
+  /** Duration on the timeline in frames */
   duration: number;
 }
 
 /**
  * Cross transition reference linking two clips.
+ * All time values are in integer frame counts relative to the project frame rate.
  */
 export interface CrossTransitionRef {
   id: string;
   outgoingClipId: string;
   incomingClipId: string;
+  /** Transition duration in frames */
   duration: number;
   type: CrossTransitionType;
-  /** Original cut point on the timeline. The transition region is [boundary - duration/2, boundary + duration/2]. */
+  /** Original cut point on the timeline in frames. The transition region is [boundary - duration/2, boundary + duration/2]. */
   boundary: number;
   easing: Easing;
 }
@@ -208,6 +215,7 @@ export interface TimelineClip {
   transitionIn?: ActiveTransition;
   transitionOut?: ActiveTransition;
   crossTransition?: ActiveCrossTransition;
+  colorGrading?: ColorGrading;
 }
 
 /**
@@ -225,7 +233,7 @@ export class EvaluatorManager {
    * Get or create an evaluator for a clip.
    * Recreates the evaluator if keyframes have changed.
    */
-  getEvaluator(clip: TimelineClip): KeyframeEvaluator | null {
+  getEvaluator(clip: Pick<TimelineClip, "keyframes" | "id">): KeyframeEvaluator | null {
     if (!clip.keyframes || clip.keyframes.tracks.length === 0) {
       // No keyframes - remove any cached evaluator
       this.evaluators.delete(clip.id);
@@ -298,8 +306,8 @@ export function buildMediaLayerData(
     }
   }
 
-  // Local time within the clip
-  const localTime = timelineTime - clip.startTime + clip.inPoint;
+  // Local time within the clip (for keyframe evaluation — inPoint is only for source media extraction)
+  const localTime = timelineTime - clip.startTime;
 
   // Build transform/effects with Object.assign to avoid multiple spread allocations.
   // Single Object.assign call merges DEFAULT → clip overrides → keyframe overrides
@@ -334,6 +342,7 @@ export function buildMediaLayerData(
     transition_in: clip.transitionIn,
     transition_out: clip.transitionOut,
     cross_transition: clip.crossTransition,
+    color_grading: clip.colorGrading,
   };
 }
 
@@ -349,18 +358,6 @@ export function buildMediaLayerDataSync(
 ): MediaLayerData | null {
   return buildMediaLayerData(clip, trackIndex, timelineTime, evaluatorManager);
 }
-
-/**
- * Legacy alias for buildMediaLayerData.
- * @deprecated Use buildMediaLayerData instead.
- */
-export const buildLayerData = buildMediaLayerData;
-
-/**
- * Legacy alias for buildMediaLayerDataSync.
- * @deprecated Use buildMediaLayerData instead.
- */
-export const buildLayerDataSync = buildMediaLayerDataSync;
 
 /**
  * Input options for building a complete render frame.
