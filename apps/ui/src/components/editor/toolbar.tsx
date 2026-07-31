@@ -1,16 +1,18 @@
+import {
+  ArrowLeft01Icon,
+  Book02Icon,
+  Cursor01Icon,
+  Download01Icon,
+  KeyboardIcon,
+  RedoIcon,
+  ScissorIcon,
+  UndoIcon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { usePostHog } from "@posthog/react";
 import { useNavigate } from "@tanstack/react-router";
 import { Link } from "@tanstack/react-router";
 import { useLiveQuery } from "dexie-react-hooks";
-import {
-  Undo2,
-  Redo2,
-  MousePointer2,
-  Scissors,
-  DownloadIcon,
-  ChevronLeft,
-  Keyboard,
-  BookIcon,
-} from "lucide-react";
 import { useState, useCallback, useRef, useEffect } from "react";
 
 import { Route } from "../../routes/editor/$projectId";
@@ -40,6 +42,7 @@ interface ToolbarProps {
 }
 
 export function Toolbar({ showSettingsOnMount }: ToolbarProps) {
+  const posthog = usePostHog();
   const { projectId } = Route.useParams();
   const exportDialogOpen = useVideoEditorStore((s) => s.exportDialogOpen);
   const setExportDialogOpen = useVideoEditorStore((s) => s.setExportDialogOpen);
@@ -163,7 +166,7 @@ export function Toolbar({ showSettingsOnMount }: ToolbarProps) {
           <TooltipTrigger asChild>
             <Button variant="ghost" size="icon" className="h-7 w-7" asChild>
               <Link to="/projects">
-                <ChevronLeft className="h-4 w-4" />
+                <HugeiconsIcon icon={ArrowLeft01Icon} className="h-4 w-4" />
               </Link>
             </Button>
           </TooltipTrigger>
@@ -200,7 +203,14 @@ export function Toolbar({ showSettingsOnMount }: ToolbarProps) {
                 onClick={() => {
                   void (async () => {
                     const assets = await importFilesWithPicker();
-                    if (assets.length > 0) addAssetsToStores(assets);
+                    if (assets.length > 0) {
+                      addAssetsToStores(assets);
+                      const types = [...new Set(assets.map((a) => a.type))];
+                      posthog.capture("media_imported", {
+                        count: assets.length,
+                        types,
+                      });
+                    }
                   })();
                 }}
               >
@@ -287,14 +297,14 @@ export function Toolbar({ showSettingsOnMount }: ToolbarProps) {
             </MenubarTrigger>
             <MenubarContent>
               <MenubarItem onClick={openKeyboardShortcuts}>
-                <Keyboard className="mr-2 h-4 w-4" />
+                <HugeiconsIcon icon={KeyboardIcon} className="mr-2 h-4 w-4" />
                 Keyboard Shortcuts
                 <MenubarShortcut>?</MenubarShortcut>
               </MenubarItem>
               <MenubarSeparator />
               <MenubarItem asChild>
                 <a href="https://docs.tooscut.app" target="_blank" rel="noopener">
-                  <BookIcon className="mr-2 h-4 w-4" />
+                  <HugeiconsIcon icon={Book02Icon} className="mr-2 h-4 w-4" />
                   Documentation
                 </a>
               </MenubarItem>
@@ -318,7 +328,7 @@ export function Toolbar({ showSettingsOnMount }: ToolbarProps) {
               disabled={!canUndo}
               onClick={() => undo()}
             >
-              <Undo2 className="h-4 w-4" />
+              <HugeiconsIcon icon={UndoIcon} className="h-4 w-4" />
             </Button>
           </TooltipTrigger>
           <TooltipContent>
@@ -335,7 +345,7 @@ export function Toolbar({ showSettingsOnMount }: ToolbarProps) {
               disabled={!canRedo}
               onClick={() => redo()}
             >
-              <Redo2 className="h-4 w-4" />
+              <HugeiconsIcon icon={RedoIcon} className="h-4 w-4" />
             </Button>
           </TooltipTrigger>
           <TooltipContent>
@@ -354,7 +364,7 @@ export function Toolbar({ showSettingsOnMount }: ToolbarProps) {
               pressed={activeTool === "select"}
               onPressedChange={() => setActiveTool("select")}
             >
-              <MousePointer2 className="h-4 w-4" />
+              <HugeiconsIcon icon={Cursor01Icon} className="h-4 w-4" />
             </Toggle>
           </TooltipTrigger>
           <TooltipContent>
@@ -370,7 +380,7 @@ export function Toolbar({ showSettingsOnMount }: ToolbarProps) {
               pressed={activeTool === "razor"}
               onPressedChange={() => setActiveTool("razor")}
             >
-              <Scissors className="h-4 w-4" />
+              <HugeiconsIcon icon={ScissorIcon} className="h-4 w-4" />
             </Toggle>
           </TooltipTrigger>
           <TooltipContent>
@@ -391,7 +401,7 @@ export function Toolbar({ showSettingsOnMount }: ToolbarProps) {
         <Tooltip>
           <TooltipTrigger asChild>
             <Button variant="default" size="sm" className="h-7 text-xs" onClick={handleExportClick}>
-              <DownloadIcon className="mr-1 h-4 w-4" />
+              <HugeiconsIcon icon={Download01Icon} className="mr-1 h-4 w-4" />
               Export
             </Button>
           </TooltipTrigger>

@@ -6,7 +6,9 @@
  * Streams output directly to disk via File System Access API.
  */
 
-import { DownloadIcon, XIcon } from "lucide-react";
+import { Cancel01Icon, Download01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { usePostHog } from "@posthog/react";
 import { useState, useCallback, useEffect } from "react";
 
 import { useMp4Export, type ExportOptions, type ExportResult } from "../../hooks/use-mp4-export";
@@ -85,6 +87,7 @@ function getStageLabel(stage: string): string {
 // ===================== COMPONENT =====================
 
 export function ExportDialog({ open, onOpenChange }: ExportDialogProps) {
+  const posthog = usePostHog();
   const settings = useVideoEditorStore((s) => s.settings);
   const inPoint = useVideoEditorStore((s) => s.inPoint);
   const outPoint = useVideoEditorStore((s) => s.outPoint);
@@ -150,9 +153,26 @@ export function ExportDialog({ open, onOpenChange }: ExportDialogProps) {
 
     setExportFileName(fileHandle?.name ?? suggestedName);
 
+    const frameRate = settings.fps.numerator / settings.fps.denominator;
+    posthog.capture("export_started", {
+      width: settings.width,
+      height: settings.height,
+      frame_rate: Math.round(frameRate * 100) / 100,
+      quality: quality,
+      export_range_only: hasInOutRange && exportRangeOnly,
+    });
+
     try {
       const result = await startExport(options);
       setExportResult(result);
+
+      posthog.capture("export_completed", {
+        duration_seconds: Math.round(result.duration),
+        render_time_seconds: Math.round(result.renderTime),
+        width: settings.width,
+        height: settings.height,
+        quality: quality,
+      });
 
       if (bufferedSink) {
         downloadBlob(bufferedSink.getBlob("video/mp4"), suggestedName);
@@ -162,6 +182,10 @@ export function ExportDialog({ open, onOpenChange }: ExportDialogProps) {
         // User cancelled, do nothing
         return;
       }
+      posthog.capture("export_failed", {
+        error_message: error instanceof Error ? error.message : "Unknown error",
+      });
+      posthog.captureException(error instanceof Error ? error : new Error("Export failed"));
       console.error("[ExportDialog] Export failed:", error);
     }
   }, [
@@ -174,12 +198,14 @@ export function ExportDialog({ open, onOpenChange }: ExportDialogProps) {
     exportRangeOnly,
     inPoint,
     outPoint,
+    posthog,
   ]);
 
   const handleCancel = useCallback(() => {
+    posthog.capture("export_cancelled");
     cancelExport();
     setExportResult(null);
-  }, [cancelExport]);
+  }, [cancelExport, posthog]);
 
   const handleClose = useCallback(() => {
     if (isExporting) {
@@ -316,7 +342,7 @@ export function ExportDialog({ open, onOpenChange }: ExportDialogProps) {
                 Cancel
               </Button>
               <Button onClick={() => void handleExport()}>
-                <DownloadIcon className="mr-2 size-4" />
+                <HugeiconsIcon icon={Download01Icon} className="mr-2 size-4" />
                 Export
               </Button>
             </>
@@ -324,7 +350,7 @@ export function ExportDialog({ open, onOpenChange }: ExportDialogProps) {
 
           {isExporting && !isComplete && (
             <Button variant="destructive" onClick={handleCancel}>
-              <XIcon className="mr-2 size-4" />
+              <HugeiconsIcon icon={Cancel01Icon} className="mr-2 size-4" />
               Cancel Export
             </Button>
           )}
